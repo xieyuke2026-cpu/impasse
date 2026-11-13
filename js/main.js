@@ -1,17 +1,17 @@
-// 靶场 v0.5 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
+// 靶场 v0.6 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
 // 渲染：Three.js（CDN）；输入：Pointer Lock + 触屏；毁伤：damage.js 纯函数；
 // 失血：bleeding.js 纯函数（假人 + 玩家）。
-// 缓存策略：全部本地模块带 ?v=0.5 查询串，版本升级即换地址，避免新旧文件混版。
+// 缓存策略：全部本地模块带 ?v=0.6 查询串，版本升级即换地址，避免新旧文件混版。
 
 import * as THREE from 'three';
-import { createControls } from './controls.js?v=0.5';
-import { createGun } from './gun.js?v=0.5';
-import { createTargets } from './targets.js?v=0.5';
-import { createRange } from './range.js?v=0.5';
-import { createHud } from './hud.js?v=0.5';
-import { createAudio } from './audio.js?v=0.5';
-import { createSettingsStore, initSettingsPanel } from './settings.js?v=0.5';
-import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.5';
+import { createControls } from './controls.js?v=0.6';
+import { createGun } from './gun.js?v=0.6';
+import { createTargets } from './targets.js?v=0.6';
+import { createRange } from './range.js?v=0.6';
+import { createHud } from './hud.js?v=0.6';
+import { createAudio } from './audio.js?v=0.6';
+import { createSettingsStore, initSettingsPanel } from './settings.js?v=0.6';
+import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.6';
 import {
   createBleedState,
   rollBleed,
@@ -26,11 +26,11 @@ import {
   bleedSpeedFactor,
   bleedVignetteOpacity,
   bleedSwayAmplitude,
-} from './bleeding.js?v=0.5';
+} from './bleeding.js?v=0.6';
 
 // 唯一版本号：由脚本写进开始界面的版本标签，显示的版本即脚本版本，
-// 旧脚本缓存不会谎报新版本（HTML 里的 v0.5 只是加载前的占位文案）。
-const VERSION = '0.5';
+// 旧脚本缓存不会谎报新版本（HTML 里的 v0.6 只是加载前的占位文案）。
+const VERSION = '0.6';
 
 const MAG_SIZE = 30;
 const RELOAD_TIME = 1.8;
@@ -207,7 +207,7 @@ function resolveCollisions(pos) {
   }
 }
 // ---------- 玩家受伤 / 失血 / 包扎 / 倒地 ----------
-// 玩家受伤接口：未来的敌人命中玩家时调用。v0.5 只有设置里的“模拟受伤”
+// 玩家受伤接口：未来的敌人命中玩家时调用。v0.6 只有设置里的“模拟受伤”
 // 测试钩子调用它。severity 为命中严重度 0..1（由毁伤模型给出）。
 function playerTakeHit(zone, severity = 0.4) {
   const z = ZONE_LABELS[zone] ? zone : 'abdomen';
@@ -598,6 +598,11 @@ controls.on('reload', () => { if (playing) startReload(); });
 controls.on('toggleMode', () => { if (playing) toggleMode(); });
 controls.on('reset', () => { if (playing) resetTargets(); });
 controls.on('jump', () => { if (playing) player.jumpBuffer = JUMP_BUFFER; });
+controls.on('bandageToggle', (on) => {
+  // 空按反馈：没失血时点开包扎开关，给一次提示——按钮不能悄悄没反应。
+  // 事件只在点按瞬间发一次，不会每帧重复。
+  if (on && playing && !isBleeding(playerBleed)) hud.toast('没有失血，无需包扎');
+});
 controls.on('lockLost', () => {
   if (playing && !controls.isTouch) hud.showPause();
 });

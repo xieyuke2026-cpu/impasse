@@ -2,7 +2,7 @@
 // 触屏是第一公民：iPad 上只用触摸就能完成全部操作。
 // 键位、触屏灵敏度、机瞄方式等来自 settings.js，可由玩家自定义。
 
-import { DEFAULT_KEYS } from './settings.js?v=0.5';
+import { DEFAULT_KEYS } from './settings.js?v=0.6';
 
 export function createControls({ canvas, elements, settings }) {
   const isTouch =
@@ -240,15 +240,21 @@ export function createControls({ canvas, elements, settings }) {
   }
   function bindTap(el, fn) {
     if (!el) return;
+    // 防重复触发：部分浏览器在 preventDefault 后的 touchstart 之外仍会补发一
+    // 次合成 click；若 click 紧跟 touchstart（<350ms），只算一次。
+    // 纯鼠标点击没有 touchstart，照常触发，不受影响。
+    let lastTouchFire = 0;
     el.addEventListener('touchstart', (e) => {
       e.preventDefault();
       e.stopPropagation();
       if (layoutEditing) return;
+      lastTouchFire = performance.now();
       fn();
     }, { passive: false });
     el.addEventListener('click', (e) => {
       e.preventDefault();
       if (layoutEditing) return;
+      if (performance.now() - lastTouchFire < 350) return; // 合成 click，touchstart 已处理
       fn();
       if (el.blur) el.blur(); // 防止空格键再次激活获得焦点的按钮
     });
@@ -313,10 +319,13 @@ export function createControls({ canvas, elements, settings }) {
   bindTap(elements.btnReset, () => emit('reset'));
   bindTap(elements.btnJump, () => emit('jump'));
 
-  // 包扎键：触屏/鼠标点按开关式（bindTap 的 touchstart + click 与其它点按
-  // 键一致，touchstart 的 preventDefault 会抑制随后的合成 click，不会连跳两次）。
+  // 包扎键：触屏/鼠标点按开关式。点按后发 'bandageToggle' 事件带上新状态，
+  // 主循环据此给无失血时的空按一次反馈（不能让按钮悄悄没反应）。
   // 键盘包扎键仍为按住式（见 update 里的 keys.has(k.bandage)）。
-  bindTap(elements.btnBandage, () => setBandageToggle(!touchBandageToggle));
+  bindTap(elements.btnBandage, () => {
+    setBandageToggle(!touchBandageToggle);
+    emit('bandageToggle', touchBandageToggle);
+  });
 
   function setAimActive(active) {
     state.aiming = active;
