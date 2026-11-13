@@ -175,6 +175,22 @@ export function createGun({ camera }) {
   addBox(leftHand, 0.02, 0.05, 0.062, glove, 0.032, 0.008, 0, 0, 0, -0.5); // 右侧屈指
   addBox(leftHand, 0.016, 0.042, 0.022, glove, -0.034, 0.012, -0.02, 0, 0, 0.6); // 拇指
 
+  // ---------- 绷带卷 + 散出的绷带条：左手的子级，只在包扎姿态时可见 ----------
+  // 白色，在沙色手套和深色枪身之间一眼能认出。卷放在手掌前方（+z 朝向镜头），
+  // 散出的条垂在手边，包扎时跟着手一起摆动。
+  const bandageMat = new THREE.MeshStandardMaterial({ color: 0xf2efe8, roughness: 0.9, metalness: 0 });
+  const bandageStrip = new THREE.Group();
+  const bandageRoll = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.04, 12), bandageMat);
+  bandageRoll.rotation.z = Math.PI / 2;
+  bandageRoll.position.set(0, 0.005, 0.03);
+  bandageStrip.add(bandageRoll);
+  const stripTail = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.04, 0.003), bandageMat);
+  stripTail.position.set(0.02, -0.035, 0.028);
+  stripTail.rotation.z = 0.3;
+  bandageStrip.add(stripTail);
+  bandageStrip.visible = false;
+  leftHand.add(bandageStrip);
+
   // ---------- 枪口 / 抛壳口锚点 ----------
   const muzzle = new THREE.Object3D();
   muzzle.position.set(0, 0.012, -0.56);
@@ -221,6 +237,9 @@ export function createGun({ camera }) {
     reloadDip: 0, // 换弹下沉
     reloading: false,
     reloadProgress: -1, // -1 = 不在换弹；0..1 = 换弹分段进度
+    bandaging: false, // 包扎读条中（主循环保证与换弹互斥）
+    bandagePose: 0, // 包扎姿态淡入淡出 0..1（0.3s 完成）
+    bandageT: 0, // 包扎缠绕摆动计时
     flashLife: 0,
     timeSinceShot: 99,
   };
@@ -257,12 +276,28 @@ export function createGun({ camera }) {
     const dipTarget = state.reloading ? 1 : 0;
     state.reloadDip += (dipTarget - state.reloadDip) * Math.min(1, dt * 8);
 
+    // 包扎姿态：0.3s 线性淡入/淡出，开始与取消都平滑，不跳变。
+    const poseTarget = state.bandaging ? 1 : 0;
+    if (state.bandagePose < poseTarget) state.bandagePose = Math.min(poseTarget, state.bandagePose + dt / 0.3);
+    else if (state.bandagePose > poseTarget) state.bandagePose = Math.max(poseTarget, state.bandagePose - dt / 0.3);
+    const bp = smoothstep(state.bandagePose);
+    state.bandageT += dt;
+
     group.position.lerpVectors(HIP_POS, ADS_POS, state.ads);
     group.position.z += state.kickZ;
     group.position.y -= state.reloadDip * 0.1;
     group.rotation.x = state.kickRot + state.reloadDip * 0.55;
+    // 包扎姿态与换弹姿态不同：枪身向中心靠拢、下沉、轻微上倾 + 内扣，
+    // 读作“双手凑到一起处理伤口”，而不是换弹的“枪身大角度上翻”。
+    // 下沉量 0.02 是取景框量出来的：再沉，持绷带的左手就贴着下边缘出画
+    // （NDC y 会到 -0.95；0.02 时约 -0.65，居中偏下，绷带卷看得清）。
+    group.position.x -= bp * 0.06;
+    group.position.y -= bp * 0.02;
+    group.rotation.x += bp * 0.22;
+    group.rotation.z = bp * 0.16;
 
-    // 换弹分段动画：弹匣落下/装回 + 拉机柄 + 左手下探（右手始终握把）
+    // 换弹分段动画：弹匣落下/装回 + 拉机柄 + 左手下探（右手始终握把）。
+    // 与包扎姿态互斥：换弹分支里不碰包扎量，包扎分支里弹匣/拉机柄归位。
     const rp = state.reloadProgress;
     if (rp >= 0) {
       let dropK;
@@ -286,12 +321,25 @@ export function createGun({ camera }) {
       leftHand.position.y = LEFT_HAND_BASE.y - 0.085 * handK;
       leftHand.position.z = LEFT_HAND_BASE.z + 0.14 * handK;
       leftHand.rotation.x = 0.5 * handK;
+      bandageStrip.visible = false;
     } else {
       magGroup.position.copy(MAG_BASE);
       magGroup.rotation.x = 0;
       chargingHandle.position.z = HANDLE_BASE_Z;
-      leftHand.position.copy(LEFT_HAND_BASE);
-      leftHand.rotation.x = 0;
+      // 包扎：左手从护木移到中下方（凑到右手边），2 Hz 小幅缠绕摆动；
+      // bp = 0 时精确回到护木原位，无残余偏移。
+      // 手的目标位置按取景框调过三轮截图 + NDC 实测：手须在机匣左侧、
+      // 靠镜头一侧、且抬到机匣顶沿高度，否则会被枪身挡住或贴着下边缘出画
+      // （第一版手在机匣正后方只露个边；第二版 NDC y -0.95 几乎出画）。
+      const wob = Math.sin(state.bandageT * Math.PI * 4);
+      const wob2 = Math.sin(state.bandageT * Math.PI * 4 + Math.PI / 2);
+      leftHand.position.x = LEFT_HAND_BASE.x + bp * -0.055;
+      leftHand.position.y = LEFT_HAND_BASE.y + bp * (0.05 + wob * 0.006);
+      leftHand.position.z = LEFT_HAND_BASE.z + bp * (0.30 + wob2 * 0.008);
+      leftHand.rotation.x = bp * (0.4 + wob * 0.12);
+      leftHand.rotation.z = bp * wob2 * 0.18;
+      bandageStrip.visible = bp > 0.02;
+      bandageStrip.rotation.x = wob * 0.25;
     }
 
     if (state.flashLife > 0) {
@@ -327,6 +375,23 @@ export function createGun({ camera }) {
     state.reloadProgress = v ? 0 : -1;
   }
 
+  function setBandaging(v) {
+    state.bandaging = v;
+  }
+
+  function getBandagePose() {
+    return state.bandagePose;
+  }
+
+  // 调试用：左手中心在 NDC 里的位置（|x|,|y| < 1 才在画面内），
+  // 供自动化验证确认包扎时手和绷带没有出画或被枪身挡住。
+  const _ndc = new THREE.Vector3();
+  function getLeftHandNdc() {
+    leftHand.getWorldPosition(_ndc);
+    _ndc.project(camera);
+    return { x: +_ndc.x.toFixed(3), y: +_ndc.y.toFixed(3), behind: _ndc.z > 1 };
+  }
+
   function setReloadProgress(p) {
     state.reloadProgress = p;
   }
@@ -350,6 +415,9 @@ export function createGun({ camera }) {
     getAdsAmount,
     setReloading,
     setReloadProgress,
+    setBandaging,
+    getBandagePose,
+    getLeftHandNdc,
     muzzleWorldPosition,
     ejectionWorldPosition,
   };

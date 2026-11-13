@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>IMPASSE — 靶场 v0.4</title>
-<link rel="stylesheet" href="css/style.css?v=0.4">
+<title>IMPASSE — 靶场 v0.5</title>
+<link rel="stylesheet" href="css/style.css?v=0.5">
 <script type="importmap">
 {
   "imports": {
@@ -85,7 +85,7 @@
 <!-- 开始界面 -->
 <div id="start-overlay" class="overlay show">
   <div class="panel">
-    <h1>IMPASSE <span class="ver">v0.4</span></h1>
+    <h1>IMPASSE <span class="ver">v0.5</span></h1>
     <p class="sub">靶场模式 · 第一人称射击原型 · 无血条 · 模块化毁伤判定</p>
     <div class="controls-desktop">
       <p><b>WASD</b> 移动 · <b>鼠标</b> 瞄准 · <b>左键</b> 射击 · <b>右键</b> 机瞄</p>
@@ -95,7 +95,7 @@
       <p><b>左半屏</b> 虚拟摇杆移动 · <b>右半屏滑动</b> 转动视角</p>
       <p><b>开火键</b> 射击 · <b>瞄准键</b> 机瞄 · <b>换弹键</b> 换弹 · <b>跳跃键</b> 跳跃 · <b>包扎键</b> 包扎</p>
     </div>
-    <p class="note">假人分头 / 胸 / 腹 / 手臂 / 腿部五个模块，命中按部位与入射角判定贯穿、擦伤或骨骼偏转；跳弹只发生在钢板、墙体等硬表面。命中可能触发失血，持续加重模块毁伤；玩家受伤后也会失血（红屏、晃动、减速），按住包扎键止血，失血过多会倒地重生。</p>
+    <p class="note">假人分头 / 胸 / 腹 / 手臂 / 腿部五个模块，命中按部位与入射角判定贯穿、擦伤或骨骼偏转；跳弹只发生在钢板、墙体等硬表面。命中可能触发失血，持续加重模块毁伤；玩家受伤后也会失血（红屏、晃动、减速随失血量渐变加重），用包扎键止血（触屏点按开关，键盘按住），失血过多会倒地重生。</p>
     <button id="btn-start" type="button">点击开始</button>
     <button id="btn-settings-start" type="button" class="btn-ghost"><svg class="gear-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置</button>
   </div>
@@ -116,6 +116,6 @@
   <div class="panel settings-panel" id="settings-panel"></div>
 </div>
 
-<script type="module" src="js/main.js?v=0.4"></script>
+<script type="module" src="js/main.js?v=0.5"></script>
 </body>
 </html>

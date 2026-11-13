@@ -1,17 +1,17 @@
-// 靶场 v0.4 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
+// 靶场 v0.5 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
 // 渲染：Three.js（CDN）；输入：Pointer Lock + 触屏；毁伤：damage.js 纯函数；
 // 失血：bleeding.js 纯函数（假人 + 玩家）。
-// 缓存策略：全部本地模块带 ?v=0.4 查询串，版本升级即换地址，避免新旧文件混版。
+// 缓存策略：全部本地模块带 ?v=0.5 查询串，版本升级即换地址，避免新旧文件混版。
 
 import * as THREE from 'three';
-import { createControls } from './controls.js?v=0.4';
-import { createGun } from './gun.js?v=0.4';
-import { createTargets } from './targets.js?v=0.4';
-import { createRange } from './range.js?v=0.4';
-import { createHud } from './hud.js?v=0.4';
-import { createAudio } from './audio.js?v=0.4';
-import { createSettingsStore, initSettingsPanel } from './settings.js?v=0.4';
-import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.4';
+import { createControls } from './controls.js?v=0.5';
+import { createGun } from './gun.js?v=0.5';
+import { createTargets } from './targets.js?v=0.5';
+import { createRange } from './range.js?v=0.5';
+import { createHud } from './hud.js?v=0.5';
+import { createAudio } from './audio.js?v=0.5';
+import { createSettingsStore, initSettingsPanel } from './settings.js?v=0.5';
+import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.5';
 import {
   createBleedState,
   rollBleed,
@@ -19,14 +19,18 @@ import {
   clearBleeds,
   bleedingZones,
   isBleeding,
-  bleedRate,
+  PLAYER_BLEED_TICK_RATE,
   COLLAPSE_THRESHOLD,
   IMMEDIATE_BLEED_FACTOR,
-} from './bleeding.js?v=0.4';
+  bleedFraction,
+  bleedSpeedFactor,
+  bleedVignetteOpacity,
+  bleedSwayAmplitude,
+} from './bleeding.js?v=0.5';
 
 // 唯一版本号：由脚本写进开始界面的版本标签，显示的版本即脚本版本，
-// 旧脚本缓存不会谎报新版本（HTML 里的 v0.4 只是加载前的占位文案）。
-const VERSION = '0.4';
+// 旧脚本缓存不会谎报新版本（HTML 里的 v0.5 只是加载前的占位文案）。
+const VERSION = '0.5';
 
 const MAG_SIZE = 30;
 const RELOAD_TIME = 1.8;
@@ -41,7 +45,7 @@ const GRAVITY = 12; // m/s²
 // 两块枪道隔板（1.1m）；木箱/油桶都在界外。顶点越过隔板留约 0.25m 余量，
 // 走跳和疾跑跳都能过去；1.6m 的钢板立柱和 1.95m 的假人仍跳不过去。
 const JUMP_VELOCITY = 5.8; // m/s
-const BANDAGE_TIME = 2.5; // 包扎读条（秒），按住包扎键/按钮，开火打断
+const BANDAGE_TIME = 2.5; // 包扎读条（秒）：键盘按住 B / 触屏点按包扎键开关；开火打断
 const COLLAPSE_FADE_TIME = 0.9; // 倒地黑场时长（秒），黑满后重生
 const COYOTE_TIME = 0.08; // 土狼时间：离地后 0.08s 内仍可起跳
 const JUMP_BUFFER = 0.1; // 输入缓冲：落地前 0.1s 内的跳跃输入仍生效
@@ -113,6 +117,7 @@ const colliders = [...range.colliders, ...targets.colliders];
 const playerBleed = createBleedState();
 let bloodLoss = 0; // 总失血量（即时伤口失血 + 失血点滴答），达到阈值即倒地
 let bandageT = 0; // 当前包扎读条进度（秒）
+let bandaging = false; // 包扎读条进行中（驱动枪身包扎姿态）
 let bandageShown = false;
 let collapsing = false; // 倒地黑场进行中
 let collapseT = 0;
@@ -202,7 +207,7 @@ function resolveCollisions(pos) {
   }
 }
 // ---------- 玩家受伤 / 失血 / 包扎 / 倒地 ----------
-// 玩家受伤接口：未来的敌人命中玩家时调用。v0.4 只有设置里的“模拟受伤”
+// 玩家受伤接口：未来的敌人命中玩家时调用。v0.5 只有设置里的“模拟受伤”
 // 测试钩子调用它。severity 为命中严重度 0..1（由毁伤模型给出）。
 function playerTakeHit(zone, severity = 0.4) {
   const z = ZONE_LABELS[zone] ? zone : 'abdomen';
@@ -210,7 +215,7 @@ function playerTakeHit(zone, severity = 0.4) {
   const r = rollBleed(playerBleed, z, Math.random());
   if (r.triggered && !r.refreshed) {
     hud.addLog(`你${ZONE_LABELS[z]}中弹，开始失血！`, 'crit');
-    hud.toast('失血！按住包扎键止血');
+    hud.toast('失血！快包扎止血');
   } else if (r.triggered) {
     hud.addLog(`你${ZONE_LABELS[z]}再次中弹，失血持续`, 'crit');
   } else {
@@ -223,6 +228,16 @@ function updateBleedHud() {
   hud.setBleeding(bleedingZones(playerBleed).map((z) => ZONE_LABELS[z]));
   const btnBandage = document.getElementById('btn-bandage');
   if (btnBandage) btnBandage.classList.toggle('toggled', isBleeding(playerBleed));
+}
+
+// 取消包扎读条：姿态淡出、进度清零、触屏开关复位（读条不会自己续上）。
+function cancelBandage() {
+  if (bandaging) {
+    bandaging = false;
+    gun.setBandaging(false);
+  }
+  bandageT = 0;
+  controls.clearBandageLatch();
 }
 
 function respawnPlayer() {
@@ -239,6 +254,8 @@ function respawnPlayer() {
   clearBleeds(playerBleed);
   bloodLoss = 0;
   bandageT = 0;
+  bandaging = false;
+  gun.setBandaging(false);
   bandageShown = false;
   hud.setBandaging(false);
   hud.setBleedVignette(0);
@@ -557,6 +574,7 @@ let reloadStage = 0;
 
 function startReload() {
   if (reloading || ammo === MAG_SIZE) return;
+  cancelBandage(); // 开始换弹取消包扎（两者互斥，姿态不打架）
   reloading = true;
   reloadStage = 0;
   reloadEnd = performance.now() / 1000 + RELOAD_TIME;
@@ -650,11 +668,13 @@ function animate() {
     }
 
     // 移动：速度向目标速度插值（加速 12/s，减速 10/s），不再瞬起瞬停；
-    // 失血时移速 -15%；倒地黑场中忽略移动输入。
-    const aiming = controls.state.aiming && !reloading;
-    const bleeding = isBleeding(playerBleed);
+    // 失血减速随总失血量渐变（刚中弹几乎不减，接近倒地时满额 -15%）；
+    // 倒地黑场中忽略移动输入。包扎时不机瞄（枪身去做包扎姿态）。
+    // bandaging 取上一帧的值，1 帧滞后不可见。
+    const aiming = controls.state.aiming && !reloading && !bandaging;
+    const bleedFrac = bleedFraction(bloodLoss);
     const baseSpeed = aiming ? 1.9 : controls.state.sprint ? 5.2 : 3.4;
-    const speed = baseSpeed * (bleeding ? 0.85 : 1);
+    const speed = baseSpeed * bleedSpeedFactor(bleedFrac);
     const sin = Math.sin(player.yaw);
     const cos = Math.cos(player.yaw);
     const mx = collapsing ? 0 : controls.state.moveX;
@@ -719,42 +739,56 @@ function animate() {
     player.pos.z = THREE.MathUtils.clamp(player.pos.z, BOUNDS.zMin, BOUNDS.zMax);
     if (player.landDip > 0) player.landDip = Math.max(0, player.landDip - dt * 0.2); // 约 0.25s 回弹
 
-    // 失血滴答 + 倒地判定（黑场中不推进）
+    // 失血滴答 + 倒地判定（黑场中不推进）。玩家滴答用 0.05/s（假人 0.1/s 不动）。
     if (!collapsing) {
-      if (isBleeding(playerBleed)) bloodLoss += tickBleed(playerBleed, dt).total;
+      if (isBleeding(playerBleed)) bloodLoss += tickBleed(playerBleed, dt, PLAYER_BLEED_TICK_RATE).total;
       if (bloodLoss >= COLLAPSE_THRESHOLD) {
         collapsing = true;
         collapseT = 0;
         collapseRespawned = false;
-        bandageT = 0;
+        cancelBandage();
         hud.setCollapseFade(1);
       }
     }
 
-    // 失血红屏：随失血速率加深 + 缓慢脉冲
+    // 失血红屏：随总失血量渐变加深 + 缓慢脉冲（刚中弹只有淡淡一层）。
     swayT += dt;
-    const bleedSpeed = bleedRate(playerBleed);
     const pulse = 0.5 + 0.5 * Math.sin(now * 4);
-    hud.setBleedVignette(
-      collapsing || bleedSpeed <= 0 ? 0 : Math.min(0.85, 0.3 + bleedSpeed * 2 + pulse * 0.08)
-    );
+    hud.setBleedVignette(collapsing ? 0 : bleedVignetteOpacity(bleedFrac, pulse));
 
-    // 包扎：按住包扎键/按钮满 2.5s 止住全部失血；开火打断读条。
-    if (collapsing || controls.state.firing) {
-      bandageT = 0;
-    } else if (controls.state.bandaging && isBleeding(playerBleed)) {
+    // 包扎：键盘按住 B / 触屏点按包扎键（开关式）开始读条，满 2.5s 止住全部失血；
+    // 开火取消读条并复位开关；开始包扎取消换弹（开始换弹取消包扎见 startReload）。
+    if (controls.state.bandaging && isBleeding(playerBleed) && !collapsing && !controls.state.firing) {
+      if (reloading) {
+        reloading = false;
+        gun.setReloading(false);
+        hud.setReloading(false);
+      }
+      if (!bandaging) {
+        bandaging = true;
+        gun.setBandaging(true);
+      }
       bandageT += dt;
       if (bandageT >= BANDAGE_TIME) {
         clearBleeds(playerBleed);
         bloodLoss = 0;
         bandageT = 0;
+        bandaging = false;
+        gun.setBandaging(false);
+        controls.clearBandageLatch();
         audio.heal();
         hud.addLog('包扎完成，失血止住了');
         hud.toast('已止血');
         updateBleedHud();
       }
     } else {
+      if (bandaging) {
+        bandaging = false;
+        gun.setBandaging(false);
+      }
       bandageT = 0;
+      // 开火/倒地取消时复位触屏开关，否则松开火键后读条会自己续上。
+      if (controls.state.firing || collapsing) controls.clearBandageLatch();
     }
     const showBandage = bandageT > 0 && isBleeding(playerBleed);
     if (showBandage !== bandageShown || showBandage) {
@@ -810,11 +844,11 @@ function animate() {
     prevFiring = firing;
 
     // 后坐力叠加到镜头（摆动横向分量沿镜头右侧方向）；落地下沉直接扣在镜头高度上；
-    // 失血时叠加小幅晃动（随失血速率增强）
+    // 失血时叠加小幅晃动（随总失血量渐变增强，满额与 v0.4 一致）
     const recoil = gun.getRecoil();
-    const swayF = Math.min(1, bleedSpeed * 5);
-    const swayPitch = Math.sin(swayT * 1.7) * 0.005 * swayF;
-    const swayYaw = Math.sin(swayT * 1.3 + 1.2) * 0.005 * swayF;
+    const swayAmp = bleedSwayAmplitude(bleedFrac);
+    const swayPitch = Math.sin(swayT * 1.7) * swayAmp;
+    const swayYaw = Math.sin(swayT * 1.3 + 1.2) * swayAmp;
     camera.position.set(player.pos.x + bobX * cos, player.pos.y + bobY - player.landDip, player.pos.z - bobX * sin);
     camera.rotation.y = player.yaw + recoil.yaw + swayYaw;
     camera.rotation.x = player.pitch + recoil.pitch + swayPitch;
@@ -867,7 +901,12 @@ window.__impasseDebug = {
   get playerPos() { return { x: player.pos.x, y: player.pos.y, z: player.pos.z }; },
   get bloodLoss() { return bloodLoss; },
   get bleeding() { return bleedingZones(playerBleed); },
+  get bleedFraction() { return bleedFraction(bloodLoss); },
+  get speedFactor() { return bleedSpeedFactor(bleedFraction(bloodLoss)); },
   get bandageProgress() { return bandageT / BANDAGE_TIME; },
+  get bandaging() { return bandaging; },
+  get bandagePose() { return gun.getBandagePose(); },
+  get leftHandNdc() { return gun.getLeftHandNdc(); },
   get collapsing() { return collapsing; },
   settings: settings.state,
   setPlayerPos(x, z) {

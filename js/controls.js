@@ -2,7 +2,7 @@
 // 触屏是第一公民：iPad 上只用触摸就能完成全部操作。
 // 键位、触屏灵敏度、机瞄方式等来自 settings.js，可由玩家自定义。
 
-import { DEFAULT_KEYS } from './settings.js?v=0.4';
+import { DEFAULT_KEYS } from './settings.js?v=0.5';
 
 export function createControls({ canvas, elements, settings }) {
   const isTouch =
@@ -15,7 +15,7 @@ export function createControls({ canvas, elements, settings }) {
     firing: false,
     aiming: false,
     sprint: false,
-    bandaging: false, // 包扎键/按钮按住中（主循环据此推进包扎进度）
+    bandaging: false, // 包扎输入有效：键盘按住包扎键，或触屏包扎键点按开关已打开
     pointerLocked: false,
     touchMode: isTouch,
   };
@@ -32,6 +32,15 @@ export function createControls({ canvas, elements, settings }) {
 
   let suspended = false; // 设置面板打开时：忽略全部游戏输入
   let layoutEditing = false; // 布局编辑中：触屏按钮不触发动作，只响应拖拽
+
+  // 触屏包扎键是开关式：点一下打开读条，再点关闭（单手拇指按住 2.5s 的同时
+  // 另一只手还要转视角，太别扭；Ryan 点按后期待立刻有反应）。
+  // 开关由主循环在包扎完成/被取消时清掉（clearBandageLatch），避免读条自己续上。
+  let touchBandageToggle = false;
+  function setBandageToggle(v) {
+    touchBandageToggle = v;
+    if (elements.btnBandage) elements.btnBandage.classList.toggle('active', v);
+  }
 
   // ---------- 键盘（键位可重绑，见 settings.js） ----------
   const keys = new Set();
@@ -59,7 +68,7 @@ export function createControls({ canvas, elements, settings }) {
   window.addEventListener('keyup', (e) => keys.delete(e.code));
   window.addEventListener('blur', () => {
     keys.clear();
-    touchBandaging = false;
+    setBandageToggle(false);
     state.firing = false;
     state.aiming = false;
     state.bandaging = false;
@@ -304,11 +313,10 @@ export function createControls({ canvas, elements, settings }) {
   bindTap(elements.btnReset, () => emit('reset'));
   bindTap(elements.btnJump, () => emit('jump'));
 
-  // 包扎：按住型（键盘 B 键或触屏包扎键），主循环按住满 2.5s 即止血。
-  let touchBandaging = false;
-  bindHold(elements.btnBandage,
-    () => { touchBandaging = true; },
-    () => { touchBandaging = false; });
+  // 包扎键：触屏/鼠标点按开关式（bindTap 的 touchstart + click 与其它点按
+  // 键一致，touchstart 的 preventDefault 会抑制随后的合成 click，不会连跳两次）。
+  // 键盘包扎键仍为按住式（见 update 里的 keys.has(k.bandage)）。
+  bindTap(elements.btnBandage, () => setBandageToggle(!touchBandageToggle));
 
   function setAimActive(active) {
     state.aiming = active;
@@ -346,8 +354,8 @@ export function createControls({ canvas, elements, settings }) {
     state.sprint = keys.has(k.sprint) ||
       ((k.sprint === 'ShiftLeft' || k.sprint === 'ShiftRight') &&
         (keys.has('ShiftLeft') || keys.has('ShiftRight')));
-    // 包扎：键盘绑定键按住，或触屏包扎键按住。
-    state.bandaging = keys.has(k.bandage) || touchBandaging;
+    // 包扎：键盘绑定键按住，或触屏包扎键开关已打开。
+    state.bandaging = keys.has(k.bandage) || touchBandageToggle;
   }
 
   function consumeLook() {
@@ -366,7 +374,7 @@ export function createControls({ canvas, elements, settings }) {
     suspended = v;
     if (v) {
       keys.clear();
-      touchBandaging = false;
+      setBandageToggle(false);
       state.firing = false;
       state.bandaging = false;
       setAimActive(false);
@@ -375,7 +383,10 @@ export function createControls({ canvas, elements, settings }) {
 
   function setLayoutEditing(v) {
     layoutEditing = v;
-    if (v) state.firing = false;
+    if (v) {
+      state.firing = false;
+      setBandageToggle(false); // 布局编辑不该让读条在身后自己续上
+    }
   }
 
   return {
@@ -388,5 +399,6 @@ export function createControls({ canvas, elements, settings }) {
     setAimActive,
     setSuspended,
     setLayoutEditing,
+    clearBandageLatch: () => setBandageToggle(false),
   };
 }
