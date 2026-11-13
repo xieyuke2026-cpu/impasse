@@ -61,6 +61,8 @@ function signTexture() {
 }
 
 export function createRange({ scene }) {
+  const group = new THREE.Group();
+  scene.add(group);
   const hitMeshes = [];
   // 障碍物碰撞体：玩家圆形与之做推离。aabb = 轴对齐矩形，circle = 圆形。
   // 每个碰撞体带 top（顶面高度，米，从几何体实测）：脚高于 top + 0.05 时
@@ -74,12 +76,12 @@ export function createRange({ scene }) {
   }
 
   // 灯光：半球光 + 环境光 + 顶灯（含射手区一盏，避免近处天花板死黑）
-  scene.add(new THREE.HemisphereLight(0xfff2e0, 0x4a4a52, 0.95));
-  scene.add(new THREE.AmbientLight(0xffffff, 0.22));
+  group.add(new THREE.HemisphereLight(0xfff2e0, 0x4a4a52, 0.95));
+  group.add(new THREE.AmbientLight(0xffffff, 0.22));
   for (const [x, z] of [[-4, -6], [4, -6], [0, -16], [0, 6]]) {
     const light = new THREE.PointLight(0xffe6b8, 26, 30, 2);
     light.position.set(x, 3.7, z);
-    scene.add(light);
+    group.add(light);
   }
 
   const wallMat = new THREE.MeshStandardMaterial({ color: 0x8a8578, roughness: 0.95, metalness: 0 });
@@ -92,35 +94,35 @@ export function createRange({ scene }) {
     new THREE.MeshStandardMaterial({ map: floorTexture(), roughness: 0.95, metalness: 0 })
   );
   floor.position.set(0, -0.1, -4);
-  scene.add(solid(floor, 'floor', 0.9));
+  group.add(solid(floor, 'floor', 0.9));
 
   // 天花板
   const ceil = new THREE.Mesh(new THREE.BoxGeometry(14, 0.2, 36), ceilMat);
   ceil.position.set(0, 4.3, -4);
-  scene.add(solid(ceil, 'wall', 0.7));
+  group.add(solid(ceil, 'wall', 0.7));
 
   // 左右墙
   for (const sx of [-7, 7]) {
     const wall = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4.4, 36), wallMat);
     wall.position.set(sx, 2.1, -4);
-    scene.add(solid(wall, 'wall', 0.9));
+    group.add(solid(wall, 'wall', 0.9));
   }
   // 后墙（射手身后）
   const backWall = new THREE.Mesh(new THREE.BoxGeometry(14, 4.4, 0.3), wallMat);
   backWall.position.set(0, 2.1, 14);
-  scene.add(solid(backWall, 'wall', 0.9));
+  group.add(solid(backWall, 'wall', 0.9));
 
   // 靶场尽头：挡弹墙 + 橡胶条
   const stopWall = new THREE.Mesh(new THREE.BoxGeometry(14, 4.4, 0.4), darkMat);
   stopWall.position.set(0, 2.1, -22);
-  scene.add(solid(stopWall, 'wall', 0.9));
+  group.add(solid(stopWall, 'wall', 0.9));
   for (let i = 0; i < 9; i++) {
     const strip = new THREE.Mesh(
       new THREE.BoxGeometry(1.3, 3.6, 0.08),
       new THREE.MeshStandardMaterial({ color: i % 2 ? 0x2c2c30 : 0x35353a, roughness: 1 })
     );
     strip.position.set(-5.6 + i * 1.4, 1.9, -21.75);
-    scene.add(strip);
+    group.add(strip);
   }
 
   // 招牌
@@ -129,14 +131,14 @@ export function createRange({ scene }) {
     new THREE.MeshStandardMaterial({ map: signTexture(), roughness: 0.8 })
   );
   sign.position.set(0, 3.5, -21.7);
-  scene.add(sign);
+  group.add(sign);
 
   // 顶灯灯板（发光贴片）
   const panelMat = new THREE.MeshBasicMaterial({ color: 0xfff3d0 });
   for (const [x, z] of [[-4, -6], [4, -6], [0, -16], [-4, -16], [4, -16], [0, 6]]) {
     const panel = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.06, 0.5), panelMat);
     panel.position.set(x, 4.18, z);
-    scene.add(panel);
+    group.add(panel);
   }
 
   // 墙面吸音板（装饰）
@@ -145,7 +147,7 @@ export function createRange({ scene }) {
     for (let i = 0; i < 5; i++) {
       const p = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.4, 2.4), panelDark);
       p.position.set(sx, 2.2, -18 + i * 6);
-      scene.add(p);
+      group.add(p);
     }
   }
 
@@ -154,7 +156,7 @@ export function createRange({ scene }) {
   for (const x of [-2.2, 2.2]) {
     const div = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.1, 5), dividerMat);
     div.position.set(x, 0.55, 6.5);
-    scene.add(solid(div, 'prop', 0.6));
+    group.add(solid(div, 'prop', 0.6));
     // 隔板顶面：0.55 + 1.1 / 2 = 1.1m
     colliders.push({ type: 'aabb', minX: x - 0.07, maxX: x + 0.07, minZ: 4.0, maxZ: 9.0, top: 1.1 });
   }
@@ -167,7 +169,7 @@ export function createRange({ scene }) {
     const crate = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), crateMat);
     crate.position.set(x, y, z);
     crate.rotation.y = (x + z) * 0.13;
-    scene.add(solid(crate, 'prop', 0.6));
+    group.add(solid(crate, 'prop', 0.6));
     // 只有落地木箱挡人（半边 0.55 覆盖旋转后的角）；叠放的由下方木箱覆盖
     // 木箱顶面：0.5 + 1 / 2 = 1.0m（可跳上/跳过）
     if (y < 1) colliders.push({ type: 'aabb', minX: x - 0.55, maxX: x + 0.55, minZ: z - 0.55, maxZ: z + 0.55, top: 1.0 });
@@ -175,10 +177,21 @@ export function createRange({ scene }) {
   for (const [x, z] of [[-5.8, -14], [5.8, -6]]) {
     const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 1.1, 18), barrelMat);
     barrel.position.set(x, 0.55, z);
-    scene.add(solid(barrel, 'prop', 0.9));
+    group.add(solid(barrel, 'prop', 0.9));
     // 油桶顶面：0.55 + 1.1 / 2 = 1.1m
     colliders.push({ type: 'circle', x, z, r: 0.42, top: 1.1 });
   }
 
-  return { hitMeshes, colliders };
+  return {
+    group,
+    hitMeshes,
+    colliders,
+    spawn: { x: 0, z: 8, yaw: 0 },
+    bounds: { x: 5.8, zMin: -1.5, zMax: 10.5 },
+    env: {
+      background: new THREE.Color(0x1a1c20),
+      fog: new THREE.Fog(0x1a1c20, 30, 55),
+    },
+    menuCam: { x: 0, z: 8, yawBase: 0, yawAmp: 0.15, pitch: -0.02 },
+  };
 }

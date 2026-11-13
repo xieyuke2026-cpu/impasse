@@ -2,7 +2,7 @@
 // 触屏是第一公民：iPad 上只用触摸就能完成全部操作。
 // 键位、触屏灵敏度、机瞄方式等来自 settings.js，可由玩家自定义。
 
-import { DEFAULT_KEYS } from './settings.js?v=0.7';
+import { DEFAULT_KEYS } from './settings.js?v=0.8';
 
 export function createControls({ canvas, elements, settings }) {
   const isTouch =

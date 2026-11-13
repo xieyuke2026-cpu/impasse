@@ -13,8 +13,8 @@ import {
   clearBleeds,
   bleedingZones,
   totalSeverity,
-} from './bleeding.js?v=0.7';
-import { ZONE_LABELS } from './damage.js?v=0.7';
+} from './bleeding.js?v=0.8';
+import { ZONE_LABELS } from './damage.js?v=0.8';
 
 const HOLE_GEO = new THREE.CircleGeometry(0.014, 10);
 const HOLE_MAT = new THREE.MeshBasicMaterial({ color: 0x111111 });
@@ -80,7 +80,49 @@ function dripTexture() {
   return tex;
 }
 
-export function createTargets({ scene, onEvent }) {
+// ---------- 靶子布局 ----------
+// 每张地图一套：纸靶/钢板/假人的位置与朝向（rotY，0 = 面向 +z，即面向出生点
+// 方向），以及一个轨道移动靶（mover：沿 axis 在 center 两侧 amplitude 内滑动）。
+// 街区布局的位置须与 street.js 的建筑/巷道对齐，改地图几何时这里要同步改。
+export const RANGE_LAYOUT = {
+  papers: [
+    { x: -4.2, z: -18, rotY: 0 },
+    { x: -1.4, z: -18, rotY: 0 },
+    { x: 1.4, z: -18, rotY: 0 },
+  ],
+  steels: [
+    { x: -2.8, z: -15, rotY: 0 },
+    { x: 0, z: -15, rotY: 0 },
+    { x: 4.2, z: -18, rotY: 0 },
+  ],
+  dummies: [{ x: 2.8, z: -14, rotY: 0 }],
+  mover: { x: 0, z: -20, axis: 'x', amplitude: 3.6, speed: 0.45, railLength: 8.6, rotY: 0, posts: false },
+};
+
+export const STREET_LAYOUT = {
+  papers: [
+    { x: -6, z: -3, rotY: 0 }, // 广场西
+    { x: 7, z: -5, rotY: 0 }, // 广场东
+    { x: -10, z: -16, rotY: Math.PI / 2 }, // 北侧西巷，面向巷口（东）
+    { x: 10, z: 9, rotY: -Math.PI / 2 }, // 南侧东巷，面向巷口（西）
+    { x: -12, z: -11, rotY: Math.PI / 2 }, // 西北房间内，面向房门（东）
+    { x: 2, z: -21, rotY: 0 }, // 主街北端远靶（距出生点约 37m）
+  ],
+  steels: [
+    { x: -3.5, z: -12, rotY: 0 }, // 主街北段西侧
+    { x: -19, z: 12, rotY: 0 }, // 西侧街南段
+    { x: 19, z: -20, rotY: 0 }, // 东侧街北端
+  ],
+  dummies: [
+    { x: -2, z: -6, rotY: 0 }, // 广场
+    { x: 8, z: -20, rotY: 0 }, // 东北房间内
+    { x: -19, z: -19, rotY: 0 }, // 西侧街北端
+  ],
+  // 移动靶横穿北侧东巷（z=-16，x 在 5.5..14.5 之间滑动），面向巷口（西）。
+  mover: { x: 10, z: -16, axis: 'x', amplitude: 4.5, speed: 0.4, railLength: 10.4, rotY: -Math.PI / 2, posts: true },
+};
+
+export function createTargets({ parent, onEvent, layout }) {
   const hitMeshes = [];
   // 障碍物碰撞体（与 range.js 相同格式），由 main.js 做圆形推离。
   // top 从几何体实测：纸靶支架腿高 1.1m，钢板立柱顶 1.6m，假人头顶 1.95m。
@@ -88,7 +130,6 @@ export function createTargets({ scene, onEvent }) {
   const papers = [];
   const steels = [];
   const dummies = [];
-  let movingCarrier = null;
 
   const paperTex = paperTexture();
   const standMat = new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.8, metalness: 0.3 });
@@ -98,8 +139,10 @@ export function createTargets({ scene, onEvent }) {
   function makePaper(group) {
     const mesh = new THREE.Mesh(
       new THREE.PlaneGeometry(0.66, 0.9),
-      new THREE.MeshStandardMaterial({ map: paperTex, roughness: 0.9, metalness: 0 })
+      // 双面：街区里玩家会绕到靶子背后，背面也要能命中（背面纹理镜像，可接受）。
+      new THREE.MeshStandardMaterial({ map: paperTex, roughness: 0.9, metalness: 0, side: THREE.DoubleSide })
     );
+    mesh.castShadow = true; // 街区阳光下纸靶投下阴影；靶场无投射阴影的灯，无影响。
     mesh.position.set(0, 1.45, 0);
     group.add(mesh);
     const paper = { group, mesh, hits: 0, falling: false, fallT: 0, holes: [] };
@@ -122,36 +165,60 @@ export function createTargets({ scene, onEvent }) {
     }
   }
 
-  // 三个固定纸靶
-  for (const x of [-4.2, -1.4, 1.4]) {
+  // 固定纸靶（按布局摆放，朝向由 rotY 定；碰撞盒随朝向旋转：0° 时
+  // x 半边 0.35 / z 半边 0.2，90° 时互换——与靶场旧版数值一致）。
+  for (const p of layout.papers) {
     const g = new THREE.Group();
-    g.position.set(x, 0, -18);
-    scene.add(g);
+    g.position.set(p.x, 0, p.z);
+    g.rotation.y = p.rotY || 0;
+    parent.add(g);
     makePaper(g);
     makeStand(g);
-    colliders.push({ type: 'aabb', minX: x - 0.35, maxX: x + 0.35, minZ: -18.2, maxZ: -17.8, top: 1.1 });
+    const c = Math.abs(Math.cos(p.rotY || 0));
+    const s = Math.abs(Math.sin(p.rotY || 0));
+    const hx = 0.35 * c + 0.2 * s;
+    const hz = 0.35 * s + 0.2 * c;
+    colliders.push({ type: 'aabb', minX: p.x - hx, maxX: p.x + hx, minZ: p.z - hz, maxZ: p.z + hz, top: 1.1 });
   }
 
   // ---------- 移动靶：轨道 + 滑架 ----------
-  {
-    const rail = new THREE.Mesh(new THREE.BoxGeometry(8.6, 0.08, 0.08), standMat);
-    rail.position.set(0, 2.4, -20);
-    scene.add(rail);
+  // 轨道沿 mover.axis 铺设，滑架在中心两侧 amplitude 内正弦滑动；
+  // posts 为真时在轨道两端立支撑杆（街区露天巷道需要，靶场轨道贴墙不需要）。
+  let moverState = null;
+  if (layout.mover) {
+    const m = layout.mover;
+    const alongX = m.axis === 'x';
+    const rail = new THREE.Mesh(
+      alongX ? new THREE.BoxGeometry(m.railLength, 0.08, 0.08) : new THREE.BoxGeometry(0.08, 0.08, m.railLength),
+      standMat
+    );
+    rail.position.set(m.x, 2.4, m.z);
+    parent.add(rail);
+    if (m.posts) {
+      const postGeo = new THREE.BoxGeometry(0.08, 2.4, 0.08);
+      for (const end of [-m.railLength / 2, m.railLength / 2]) {
+        const post = new THREE.Mesh(postGeo, standMat);
+        post.position.set(alongX ? m.x + end : m.x, 1.2, alongX ? m.z : m.z + end);
+        parent.add(post);
+      }
+    }
     const carrier = new THREE.Group();
-    carrier.position.set(0, 0, -20);
-    scene.add(carrier);
+    carrier.position.set(m.x, 0, m.z);
+    carrier.rotation.y = m.rotY || 0;
+    parent.add(carrier);
     const hanger = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.5, 0.06), standMat);
     hanger.position.set(0, 2.15, 0);
     carrier.add(hanger);
     makePaper(carrier);
-    movingCarrier = carrier;
+    moverState = { carrier, base: alongX ? m.x : m.z, axis: m.axis, amplitude: m.amplitude, speed: m.speed };
   }
 
   // ---------- 钢板靶：顶部铰链悬挂，命中摆动，打满 3 发倒下 ----------
-  function makeSteel(x, z) {
+  function makeSteel(x, z, rotY = 0) {
     const pivot = new THREE.Group();
     pivot.position.set(x, 1.6, z);
-    scene.add(pivot);
+    pivot.rotation.y = rotY;
+    parent.add(pivot);
     const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.6, 0.08), standMat);
     post.position.set(0, -0.8, 0.25);
     pivot.add(post);
@@ -161,25 +228,28 @@ export function createTargets({ scene, onEvent }) {
     const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.025, 24), steelMat.clone());
     plate.rotation.x = Math.PI / 2;
     plate.position.set(0, -0.38, 0);
+    plate.castShadow = true;
     pivot.add(plate);
     const steel = { pivot, plate, angle: 0, angVel: 0, hits: 0, fallen: false };
     plate.userData.surface = { kind: 'steel', hardness: 1.0 };
     plate.userData.steel = steel;
     hitMeshes.push(plate);
     steels.push(steel);
-    // 立柱在 pivot 后方 z+0.25 处；立柱顶面 1.6m（pivot 1.6m，立柱中心 0.8m、高 1.6m）
-    colliders.push({ type: 'aabb', minX: x - 0.1, maxX: x + 0.1, minZ: z + 0.15, maxZ: z + 0.35, top: 1.6 });
+    // 立柱在 pivot 后方局部 z+0.25 处，随 rotY 旋转；立柱顶面 1.6m
+    // （pivot 1.6m，立柱中心 0.8m、高 1.6m）。rotY=0 时与靶场旧版数值一致。
+    const px = x + Math.sin(rotY) * 0.25;
+    const pz = z + Math.cos(rotY) * 0.25;
+    colliders.push({ type: 'aabb', minX: px - 0.1, maxX: px + 0.1, minZ: pz - 0.1, maxZ: pz + 0.1, top: 1.6 });
     return steel;
   }
-  makeSteel(-2.8, -15);
-  makeSteel(0, -15);
-  makeSteel(4.2, -18);
+  for (const s of layout.steels) makeSteel(s.x, s.z, s.rotY || 0);
 
   // ---------- 分区假人 ----------
-  function makeDummy(x, z) {
+  function makeDummy(x, z, rotY = 0) {
     const group = new THREE.Group();
     group.position.set(x, 0, z);
-    scene.add(group);
+    group.rotation.y = rotY;
+    parent.add(group);
     const baseMat = new THREE.MeshStandardMaterial({ color: 0x5a6248, roughness: 0.85, metalness: 0.05 });
     const dummy = {
       group,
@@ -194,6 +264,7 @@ export function createTargets({ scene, onEvent }) {
     };
     function part(w, h, d, px, py, zone) {
       const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), baseMat.clone());
+      m.castShadow = true;
       m.position.set(px, py, 0);
       m.userData.surface = { kind: 'dummy', hardness: 0.15 };
       m.userData.zone = zone;
@@ -232,7 +303,7 @@ export function createTargets({ scene, onEvent }) {
     colliders.push({ type: 'circle', x, z, r: 0.45, top: 1.95 });
     return dummy;
   }
-  makeDummy(2.8, -14);
+  for (const d of layout.dummies) makeDummy(d.x, d.z, d.rotY || 0);
 
   // ---------- 失血滴落粒子（对象池） ----------
   const dripTex = dripTexture();
@@ -245,7 +316,7 @@ export function createTargets({ scene, onEvent }) {
       const mat = new THREE.SpriteMaterial({ map: dripTex, transparent: true, depthWrite: false });
       const sprite = new THREE.Sprite(mat);
       sprite.visible = false;
-      scene.add(sprite);
+      parent.add(sprite);
       d = { sprite, vel: new THREE.Vector3(), life: 0, active: false };
       drips.push(d);
     }
@@ -366,8 +437,9 @@ export function createTargets({ scene, onEvent }) {
 
   // ---------- 更新 ----------
   function update(dt, elapsed) {
-    if (movingCarrier) {
-      movingCarrier.position.x = Math.sin(elapsed * 0.45) * 3.6;
+    if (moverState) {
+      moverState.carrier.position[moverState.axis] =
+        moverState.base + Math.sin(elapsed * moverState.speed) * moverState.amplitude;
     }
     for (const paper of papers) {
       if (paper.falling && paper.fallT < 1) {
@@ -477,7 +549,8 @@ export function createTargets({ scene, onEvent }) {
   }
 
   // 全清状态（只读快照，供主循环判定“全部清除”与记录最快全清用）：
-  // 纸靶 4 个（含轨道移动靶）、钢板 3 个、假人 1 个，全部倒下/失能才算全清。
+  // 本布局的全部纸靶（含轨道移动靶）、钢板、假人倒下/失能才算全清；
+  // 主循环只问当前地图的这一套，不跨地图统计。
   function getClearState() {
     const papersDown = papers.filter((p) => p.falling).length;
     const steelsDown = steels.filter((s) => s.fallen).length;

@@ -569,6 +569,9 @@ body.settings-open { touch-action: auto; }
 }
 .mode-card.selected { border-color: #ffd75e; border-left-color: #ffd75e; background: rgba(40, 36, 20, 0.88); }
 .mode-card.disabled { opacity: 0.55; }
+/* 可选的模式卡片能点：手形光标 + 点按反馈（置灰的开发中卡片没有 data-map，不响应） */
+.mode-card[data-map] { cursor: pointer; }
+.mode-card[data-map]:active { background: rgba(52, 46, 26, 0.92); }
 .mode-info { display: flex; flex-direction: column; gap: 4px; text-align: left; }
 .mode-name { font-size: 19px; font-weight: bold; }
 .mode-desc { font-size: 13px; color: #a9a9a9; }

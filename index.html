@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>IMPASSE — 靶场 v0.7</title>
-<link rel="stylesheet" href="css/style.css?v=0.7">
+<title>IMPASSE v0.8</title>
+<link rel="stylesheet" href="css/style.css?v=0.8">
 <script type="importmap">
 {
   "imports": {
@@ -88,13 +88,19 @@
 <div id="start-overlay" class="overlay show">
   <div class="home">
     <div class="home-main">
-      <h1 class="home-title">IMPASSE <span class="ver">v0.7</span></h1>
-      <p class="home-sub">靶场模式 · 无血条 · 模块化毁伤判定</p>
+      <h1 class="home-title">IMPASSE <span class="ver">v0.8</span></h1>
+      <p class="home-sub">单人射击 · 无血条 · 模块化毁伤判定</p>
       <div class="mode-list">
-        <div class="mode-card selected">
+        <div class="mode-card selected" data-map="range">
           <div class="mode-info">
             <span class="mode-name">靶场</span>
             <span class="mode-desc">单人练习 · 纸靶 / 钢板 / 分区假人 · 失血系统</span>
+          </div>
+        </div>
+        <div class="mode-card" data-map="street">
+          <div class="mode-info">
+            <span class="mode-name">城市街区</span>
+            <span class="mode-desc">室外街区 · 商铺 / 小巷 / 广场 · 可进房间 · 边走边打</span>
           </div>
         </div>
         <div class="mode-card disabled" aria-disabled="true">
@@ -112,11 +118,11 @@
           <button id="btn-help" type="button" class="home-btn-ghost">操作说明</button>
         </div>
       </div>
-      <p class="home-foot"><span class="ver">v0.7</span> · Three.js · 纯静态页面</p>
+      <p class="home-foot"><span class="ver">v0.8</span> · Three.js · 纯静态页面</p>
     </div>
     <div class="home-records">
       <h2>射击记录</h2>
-      <div id="records-body"><p class="records-empty">暂无记录，去靶场打一局</p></div>
+      <div id="records-body"><p class="records-empty">暂无记录，去打一局</p></div>
     </div>
   </div>
 </div>
@@ -148,6 +154,6 @@
   <div class="panel settings-panel" id="settings-panel"></div>
 </div>
 
-<script type="module" src="js/main.js?v=0.7"></script>
+<script type="module" src="js/main.js?v=0.8"></script>
 </body>
 </html>

@@ -1,18 +1,20 @@
-// 靶场 v0.7 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
+// IMPASSE v0.8 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
 // 渲染：Three.js（CDN）；输入：Pointer Lock + 触屏；毁伤：damage.js 纯函数；
 // 失血：bleeding.js 纯函数（假人 + 玩家）；记录：records.js 纯函数 + localStorage。
-// 缓存策略：全部本地模块带 ?v=0.7 查询串，版本升级即换地址，避免新旧文件混版。
+// 两张地图（靶场 + 城市街区）同场建造、按组切换可见性；记录两张图共用。
+// 缓存策略：全部本地模块带 ?v=0.8 查询串，版本升级即换地址，避免新旧文件混版。
 
 import * as THREE from 'three';
-import { createControls } from './controls.js?v=0.7';
-import { createGun } from './gun.js?v=0.7';
-import { createTargets } from './targets.js?v=0.7';
-import { createRange } from './range.js?v=0.7';
-import { createHud } from './hud.js?v=0.7';
-import { createAudio } from './audio.js?v=0.7';
-import { createSettingsStore, initSettingsPanel, KEY_ACTIONS, keyLabel } from './settings.js?v=0.7';
-import { createRecordsStore } from './records.js?v=0.7';
-import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.7';
+import { createControls } from './controls.js?v=0.8';
+import { createGun } from './gun.js?v=0.8';
+import { createTargets, RANGE_LAYOUT, STREET_LAYOUT } from './targets.js?v=0.8';
+import { createRange } from './range.js?v=0.8';
+import { createStreet } from './street.js?v=0.8';
+import { createHud } from './hud.js?v=0.8';
+import { createAudio } from './audio.js?v=0.8';
+import { createSettingsStore, initSettingsPanel, KEY_ACTIONS, keyLabel } from './settings.js?v=0.8';
+import { createRecordsStore } from './records.js?v=0.8';
+import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.8';
 import {
   createBleedState,
   rollBleed,
@@ -27,24 +29,27 @@ import {
   bleedSpeedFactor,
   bleedVignetteOpacity,
   bleedSwayAmplitude,
-} from './bleeding.js?v=0.7';
+} from './bleeding.js?v=0.8';
 
 // 唯一版本号：由脚本写进主页的版本标签，显示的版本即脚本版本，
-// 旧脚本缓存不会谎报新版本（HTML 里的 v0.7 只是加载前的占位文案）。
-const VERSION = '0.7';
+// 旧脚本缓存不会谎报新版本（HTML 里的 v0.8 只是加载前的占位文案）。
+const VERSION = '0.8';
 
 const MAG_SIZE = 30;
 const RELOAD_TIME = 1.8;
 const AUTO_INTERVAL = 0.1; // 600 RPM
 const SEMI_INTERVAL = 0.14;
 const EYE_HEIGHT = 1.6;
-const BOUNDS = { x: 5.8, zMin: -1.5, zMax: 10.5 };
+// 活动范围与出生点按地图走（各地图的 bounds/spawn）：靶场限制在射手区，
+// 街区放开到整张图。不要在这里再写一份全局 BOUNDS。
 const GRAVITY = 12; // m/s²
 // 跳跃初速度 5.8 m/s：理论顶点 1.40m，60fps 半隐式积分实测约 1.35m。
 // 障碍物顶面实测：隔板/油桶/纸靶架 1.1m、木箱 1.0m、钢板立柱 1.6m、假人 1.95m。
-// 玩家活动范围被 BOUNDS 限制在射手区（z ≥ -1.5），区内仅有的两个障碍物就是
+// 靶场活动范围被限制在射手区（z ≥ -1.5），区内仅有的两个障碍物就是
 // 两块枪道隔板（1.1m）；木箱/油桶都在界外。顶点越过隔板留约 0.25m 余量，
 // 走跳和疾跑跳都能过去；1.6m 的钢板立柱和 1.95m 的假人仍跳不过去。
+// 街区同理：花坛 0.6m、沙袋 0.8m、路障 0.9m、木箱 1.0m、垃圾箱 1.2m 可跳，
+// 汽车 1.4m、墙体 3.2m 跳不过去。
 const JUMP_VELOCITY = 5.8; // m/s
 const BANDAGE_TIME = 2.5; // 包扎读条（秒）：键盘按住 B / 触屏点按包扎键开关；开火打断
 const COLLAPSE_FADE_TIME = 0.9; // 倒地黑场时长（秒），黑满后重生
@@ -58,30 +63,56 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
+// 阴影：只有街区的太阳投射阴影（1024 贴图），靶场的灯一律不投射，
+// 开启阴影贴图对靶场没有额外开销。
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1c20);
 scene.fog = new THREE.Fog(0x1a1c20, 30, 55);
 
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 80);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 120);
 camera.rotation.order = 'YXZ';
 scene.add(camera);
 
-const range = createRange({ scene });
+// ---------- 地图：两张图同场建造，按组切换 ----------
+// 每张地图的环境与靶子挂在同一个组里（靶子以环境组为 parent）：
+// 切图 = 换组的 visible + 换射线/碰撞集合 + 换天空/雾。灯光挂在组里，
+// 隐藏的组灯光自动失效，不重建。靶子 update 只跑当前地图的一套。
+const rangeEnv = createRange({ scene });
+const streetEnv = createStreet({ scene });
 const hud = createHud();
 const audio = createAudio();
 const settings = createSettingsStore();
 const recordsStore = createRecordsStore();
-// 失血导致模块损毁时，targets 通过事件回调让主循环写日志/弹提示。
-const targets = createTargets({
-  scene,
-  onEvent: (evt) => {
-    if (evt.type === 'bleedDestroy') {
-      hud.addLog(`假人${evt.zoneLabel}模块因失血损毁！`, 'crit');
-      if (evt.incapacitated) hud.toast('目标失能！');
-    }
-  },
-});
+// 失血导致模块损毁时，targets 通过事件回调让主循环写日志/弹提示（两套靶子共用）。
+const onTargetEvent = (evt) => {
+  if (evt.type === 'bleedDestroy') {
+    hud.addLog(`假人${evt.zoneLabel}模块因失血损毁！`, 'crit');
+    if (evt.incapacitated) hud.toast('目标失能！');
+  }
+};
+const rangeTargets = createTargets({ parent: rangeEnv.group, onEvent: onTargetEvent, layout: RANGE_LAYOUT });
+const streetTargets = createTargets({ parent: streetEnv.group, onEvent: onTargetEvent, layout: STREET_LAYOUT });
+const MAPS = {
+  range: { id: 'range', label: '靶场', env: rangeEnv, targets: rangeTargets },
+  street: { id: 'street', label: '街区', env: streetEnv, targets: streetTargets },
+};
+let activeMapId = 'range';
+let activeMap = MAPS.range;
+let allHitMeshes = [];
+let colliders = [];
+function setActiveMap(id) {
+  activeMapId = id;
+  activeMap = MAPS[id];
+  for (const m of Object.values(MAPS)) m.env.group.visible = m === activeMap;
+  allHitMeshes = [...activeMap.env.hitMeshes, ...activeMap.targets.hitMeshes];
+  colliders = [...activeMap.env.colliders, ...activeMap.targets.colliders];
+  scene.background = activeMap.env.env.background;
+  scene.fog = activeMap.env.env.fog;
+}
+setActiveMap('range');
 const gun = createGun({ camera });
 
 const controls = createControls({
@@ -111,9 +142,6 @@ initSettingsPanel({
   },
 });
 if (controls.isTouch) document.body.classList.add('touch');
-
-const allHitMeshes = [...range.hitMeshes, ...targets.hitMeshes];
-const colliders = [...range.colliders, ...targets.colliders];
 
 // ---------- 玩家失血状态 ----------
 const playerBleed = createBleedState();
@@ -243,7 +271,8 @@ function cancelBandage() {
 }
 
 function respawnPlayer() {
-  player.pos.set(0, EYE_HEIGHT, 8);
+  const spawn = activeMap.env.spawn;
+  player.pos.set(spawn.x, EYE_HEIGHT, spawn.z);
   player.vel.set(0, 0, 0);
   player.vy = 0;
   player.grounded = true;
@@ -251,7 +280,7 @@ function respawnPlayer() {
   player.coyote = 0;
   player.jumpBuffer = 0;
   player.landDip = 0;
-  player.yaw = 0;
+  player.yaw = spawn.yaw;
   player.pitch = 0;
   clearBleeds(playerBleed);
   bloodLoss = 0;
@@ -513,7 +542,7 @@ function shoot(now) {
       energy,
       roll: Math.random(),
     });
-    const res = targets.applyDummyHit(obj, evalResult);
+    const res = activeMap.targets.applyDummyHit(obj, evalResult);
     score.hits += 1;
     score.zoneCounts[evalResult.zone] += 1;
     hud.showHitmarker(evalResult.zoneLabel);
@@ -525,7 +554,7 @@ function shoot(now) {
   }
 
   if (surface.kind === 'paper') {
-    const res = targets.applyPaperHit(obj, _hitPoint);
+    const res = activeMap.targets.applyPaperHit(obj, _hitPoint);
     score.hits += 1;
     hud.showHitmarker('纸靶');
     hud.addLog(res.log);
@@ -535,7 +564,7 @@ function shoot(now) {
   }
 
   if (surface.kind === 'steel') {
-    const res = targets.applySteelHit(obj, energy);
+    const res = activeMap.targets.applySteelHit(obj, energy);
     score.hits += 1;
     hud.showHitmarker('钢板');
     hud.addLog(res.log);
@@ -592,7 +621,7 @@ function toggleMode() {
 }
 
 function resetTargets() {
-  targets.reset();
+  activeMap.targets.reset();
   clearAnnounced = false; // 重置后可以再次达成并播报全清
   hud.addLog('靶子已重置');
   hud.toast('靶子已重置');
@@ -628,7 +657,7 @@ function renderRecords() {
   if (!body) return;
   const r = recordsStore.get();
   if (r.totalSessions === 0) {
-    body.innerHTML = '<p class="records-empty">暂无记录，去靶场打一局</p>';
+    body.innerHTML = '<p class="records-empty">暂无记录，去打一局</p>';
     return;
   }
   const rows = [
@@ -670,7 +699,7 @@ function resetSession() {
   hud.setBleedVignette(0);
   hud.setBandaging(false);
   respawnPlayer();
-  targets.reset();
+  activeMap.targets.reset();
   clearAnnounced = false;
   nextShotAt = 0;
   prevFiring = false;
@@ -688,7 +717,7 @@ function endSession() {
     shots: score.shots,
     hits: score.hits,
     elapsedSec: Math.max(0, Math.round(elapsed)),
-    cleared: targets.getClearState().cleared,
+    cleared: activeMap.targets.getClearState().cleared,
   });
 }
 
@@ -709,16 +738,31 @@ function goHome() {
 // ---------- 开始 / 暂停 ----------
 function startGame() {
   resetSession();
-  document.body.classList.remove('home'); // 进靶场：显示局内 HUD
+  document.body.classList.remove('home'); // 进地图：显示局内 HUD
   playing = true;
   startedAt = performance.now() / 1000;
   audio.unlock(); // 用户手势中创建/恢复 AudioContext
   hud.hideStart();
   hud.hidePause();
   controls.requestPointerLock();
-  hud.addLog('靶场已就绪，开始射击');
+  hud.addLog(`${activeMap.label}已就绪，开始射击`);
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 }
+
+// 主页模式选择：点卡片切换地图（金色高亮移动），进入按钮文案跟随，
+// 背景 3D 场景即时切换。记录两张图共用，v0.8 不分地图统计。
+function selectMap(id) {
+  if (!MAPS[id] || id === activeMapId) return;
+  document.querySelectorAll('.mode-card[data-map]').forEach((c) => {
+    c.classList.toggle('selected', c.dataset.map === id);
+  });
+  document.getElementById('btn-start').textContent = `进入${MAPS[id].label}`;
+  setActiveMap(id);
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+}
+document.querySelectorAll('.mode-card[data-map]').forEach((card) => {
+  card.addEventListener('click', () => selectMap(card.dataset.map));
+});
 
 document.getElementById('btn-start').addEventListener('click', startGame);
 document.getElementById('btn-resume').addEventListener('click', () => {
@@ -730,7 +774,7 @@ document.getElementById('btn-resume').addEventListener('click', () => {
 document.getElementById('btn-home').addEventListener('click', goHome);
 document.getElementById('btn-pause').addEventListener('click', () => {
   if (!playing) return;
-  if (pauseSub) pauseSub.textContent = '点继续回到靶场';
+  if (pauseSub) pauseSub.textContent = `点继续回到${activeMap.label}`;
   hud.showPause();
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 });
@@ -843,8 +887,9 @@ function animate() {
     player.vel.z += (vz * speed - player.vel.z) * k;
     player.pos.x += player.vel.x * dt;
     player.pos.z += player.vel.z * dt;
-    player.pos.x = THREE.MathUtils.clamp(player.pos.x, -BOUNDS.x, BOUNDS.x);
-    player.pos.z = THREE.MathUtils.clamp(player.pos.z, BOUNDS.zMin, BOUNDS.zMax);
+    const bounds = activeMap.env.bounds;
+    player.pos.x = THREE.MathUtils.clamp(player.pos.x, -bounds.x, bounds.x);
+    player.pos.z = THREE.MathUtils.clamp(player.pos.z, bounds.zMin, bounds.zMax);
 
     // 跳跃与支撑：脚下支撑面（地面或障碍物顶）决定落地高度；
     // 走出支撑边缘即下落；站上更高处只能靠跳跃落地（地面高度只降不升，
@@ -888,8 +933,8 @@ function animate() {
     }
     // 水平推离放在垂直结算之后：落地/站在顶面上时，脚下障碍物的推离会跳过。
     resolveCollisions(player.pos);
-    player.pos.x = THREE.MathUtils.clamp(player.pos.x, -BOUNDS.x, BOUNDS.x);
-    player.pos.z = THREE.MathUtils.clamp(player.pos.z, BOUNDS.zMin, BOUNDS.zMax);
+    player.pos.x = THREE.MathUtils.clamp(player.pos.x, -bounds.x, bounds.x);
+    player.pos.z = THREE.MathUtils.clamp(player.pos.z, bounds.zMin, bounds.zMax);
     if (player.landDip > 0) player.landDip = Math.max(0, player.landDip - dt * 0.2); // 约 0.25s 回弹
 
     // 失血滴答 + 倒地判定（黑场中不推进）。玩家滴答用 0.05/s（假人 0.1/s 不动）。
@@ -1026,7 +1071,7 @@ function animate() {
       hud.setScore({ shots: score.shots, hits: score.hits, zoneCounts: score.zoneCounts, elapsedSec: elapsed });
       // 全清判定：纸靶（含移动靶）全倒 + 钢板全倒 + 假人失能。达成即时保存
       // 最快全清（不等回主页结算），每局只播报一次。
-      if (!clearAnnounced && targets.getClearState().cleared) {
+      if (!clearAnnounced && activeMap.targets.getClearState().cleared) {
         clearAnnounced = true;
         recordsStore.recordClear(Math.max(0, Math.round(elapsed)));
         hud.addLog(`全部清除！用时 ${formatElapsed(elapsed)}`, 'ricochet');
@@ -1034,15 +1079,16 @@ function animate() {
       }
     }
   } else {
-    // 菜单状态：镜头缓缓扫视靶场
-    camera.position.set(0, EYE_HEIGHT, 8);
-    camera.rotation.y = Math.sin(now * 0.08) * 0.15;
-    camera.rotation.x = -0.02;
+    // 菜单状态：镜头在当前地图的出生点缓缓扫视（主页背景随选中的地图切换）
+    const mc = activeMap.env.menuCam;
+    camera.position.set(mc.x, EYE_HEIGHT, mc.z);
+    camera.rotation.y = mc.yawBase + Math.sin(now * 0.08) * mc.yawAmp;
+    camera.rotation.x = mc.pitch;
     camera.rotation.z = 0;
     gun.update(dt, false);
   }
 
-  targets.update(dt, now);
+  activeMap.targets.update(dt, now);
   updateEffects(dt);
   renderer.render(scene, camera);
 }
@@ -1057,8 +1103,17 @@ document.querySelectorAll('#start-overlay .ver').forEach((el) => {
 window.__impasseDebug = {
   version: VERSION,
   get playing() { return playing; },
+  get mapId() { return activeMapId; },
   get records() { return recordsStore.get(); },
-  get clearState() { return targets.getClearState(); },
+  get clearState() { return activeMap.targets.getClearState(); },
+  get meshCounts() {
+    const count = (g) => {
+      let n = 0;
+      g.traverse((o) => { if (o.isMesh || o.isSprite) n++; });
+      return n;
+    };
+    return { range: count(rangeEnv.group), street: count(streetEnv.group) };
+  },
   get playerY() { return player.pos.y; },
   get feetY() { return player.pos.y - EYE_HEIGHT; },
   get cameraY() { return camera.position.y; },
@@ -1088,7 +1143,7 @@ window.__impasseDebug = {
     player.pitch = pitch;
   },
   simulateHit(zone, severity) { playerTakeHit(zone, severity); },
-  getDummies() { return targets.getDummies(); },
+  getDummies() { return activeMap.targets.getDummies(); },
 };
 
 hud.setAmmo(MAG_SIZE, '∞');
