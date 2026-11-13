@@ -101,6 +101,11 @@ export function createHud() {
     while (logEl.children.length > 6) logEl.removeChild(logEl.lastChild);
   }
 
+  // 新一局开始前清空旧日志（回主页 / 重新进入时调用）。
+  function clearLog() {
+    logEl.innerHTML = '';
+  }
+
   function setScore({ shots, hits, zoneCounts, elapsedSec }) {
     const acc = shots > 0 ? Math.round((hits / shots) * 100) : 0;
     const mm = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
@@ -135,6 +140,7 @@ export function createHud() {
     setCrosshair,
     showHitmarker,
     addLog,
+    clearLog,
     setScore,
     toast,
     showStart,

@@ -13,8 +13,8 @@ import {
   clearBleeds,
   bleedingZones,
   totalSeverity,
-} from './bleeding.js?v=0.6';
-import { ZONE_LABELS } from './damage.js?v=0.6';
+} from './bleeding.js?v=0.7';
+import { ZONE_LABELS } from './damage.js?v=0.7';
 
 const HOLE_GEO = new THREE.CircleGeometry(0.014, 10);
 const HOLE_MAT = new THREE.MeshBasicMaterial({ color: 0x111111 });
@@ -476,6 +476,23 @@ export function createTargets({ scene, onEvent }) {
     }
   }
 
+  // 全清状态（只读快照，供主循环判定“全部清除”与记录最快全清用）：
+  // 纸靶 4 个（含轨道移动靶）、钢板 3 个、假人 1 个，全部倒下/失能才算全清。
+  function getClearState() {
+    const papersDown = papers.filter((p) => p.falling).length;
+    const steelsDown = steels.filter((s) => s.fallen).length;
+    const dummiesDown = dummies.filter((d) => d.incapacitated).length;
+    return {
+      papersDown,
+      papersTotal: papers.length,
+      steelsDown,
+      steelsTotal: steels.length,
+      dummiesDown,
+      dummiesTotal: dummies.length,
+      cleared: papersDown === papers.length && steelsDown === steels.length && dummiesDown === dummies.length,
+    };
+  }
+
   return {
     hitMeshes,
     colliders,
@@ -484,6 +501,7 @@ export function createTargets({ scene, onEvent }) {
     applyPaperHit,
     applySteelHit,
     applyDummyHit,
+    getClearState,
     // 调试用：自动化验证读取假人状态（模块完整度/失血/失能），不影响游戏。
     getDummies() {
       return dummies.map((d) => ({

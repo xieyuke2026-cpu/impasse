@@ -193,7 +193,8 @@ html, body {
   pointer-events: none;
 }
 #zone-line { color: #cfcfcf; margin-top: 4px; }
-#btn-reset {
+#btn-reset,
+#btn-pause {
   pointer-events: auto;
   margin-top: 8px;
   background: rgba(0, 0, 0, 0.5);
@@ -204,7 +205,20 @@ html, body {
   font-size: 14px;
   cursor: pointer;
 }
-#btn-reset:active { background: rgba(255, 255, 255, 0.25); }
+#btn-reset:active,
+#btn-pause:active { background: rgba(255, 255, 255, 0.25); }
+/* 暂停键只在触屏上出现：桌面端靠指针锁定丢失进暂停，触屏没有指针锁定， */
+/* 没有这个键就永远到不了暂停界面，也就回不了主页。 */
+#btn-pause { display: none; margin-left: 6px; }
+body.touch #btn-pause { display: inline-block; }
+/* 主页状态下隐藏全部局内 HUD（弹药/计分/日志/准星/触屏按钮），只留主页界面。 */
+body.home #hud-bl,
+body.home #hud-tr,
+body.home #damage-log,
+body.home #crosshair,
+body.home #hitmarker,
+body.home #hitmarker-label,
+body.home #touch-ui { display: none !important; }
 
 #damage-log {
   position: fixed;
@@ -521,4 +535,150 @@ body.settings-open { touch-action: auto; }
 @media (max-width: 700px) {
   #damage-log { width: 220px; top: 96px; font-size: 12px; }
   #ammo { font-size: 32px; }
+}
+
+/* ---------- 主页 ---------- */
+/* 遮罩比普通浮层浅，右侧露出更多 3D 靶场；菜单状态镜头扫视一直在背景里跑。 */
+#start-overlay {
+  overflow-y: auto;
+  background: linear-gradient(100deg, rgba(10, 10, 14, 0.84) 0%, rgba(10, 10, 14, 0.58) 55%, rgba(10, 10, 14, 0.38) 100%);
+}
+.home {
+  display: flex;
+  gap: 28px;
+  align-items: stretch;
+  width: min(920px, calc(100% - 40px));
+  margin: auto;
+  padding: 24px 0;
+}
+.home-main { flex: 1; min-width: 0; text-align: left; }
+.home-title { font-size: 52px; letter-spacing: 6px; line-height: 1.1; }
+.home-title .ver { font-size: 20px; color: #ffd75e; letter-spacing: 0; margin-left: 6px; }
+.home-sub { margin-top: 10px; color: #cfcfcf; font-size: 16px; letter-spacing: 1px; }
+.mode-list { margin-top: 26px; display: flex; flex-direction: column; gap: 10px; }
+.mode-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(20, 22, 28, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-left: 4px solid rgba(255, 255, 255, 0.25);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.mode-card.selected { border-color: #ffd75e; border-left-color: #ffd75e; background: rgba(40, 36, 20, 0.88); }
+.mode-card.disabled { opacity: 0.55; }
+.mode-info { display: flex; flex-direction: column; gap: 4px; text-align: left; }
+.mode-name { font-size: 19px; font-weight: bold; }
+.mode-desc { font-size: 13px; color: #a9a9a9; }
+.mode-tag {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: bold;
+  color: #1a1c20;
+  background: #8a8a8a;
+  border-radius: 10px;
+  padding: 3px 10px;
+}
+.home-actions { margin-top: 26px; display: flex; flex-direction: column; gap: 10px; }
+.home-btn-primary {
+  width: 100%;
+  min-height: 56px;
+  background: #ffd75e;
+  color: #1a1c20;
+  border: none;
+  border-radius: 10px;
+  padding: 16px 20px;
+  font-size: 20px;
+  font-weight: bold;
+  letter-spacing: 2px;
+  cursor: pointer;
+}
+.home-btn-primary:active { background: #f2c94b; }
+.home-actions-row { display: flex; gap: 10px; }
+.home-btn-ghost {
+  flex: 1;
+  min-height: 50px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 10px;
+  padding: 13px 10px;
+  font-size: 16px;
+  cursor: pointer;
+}
+.home-btn-ghost:active { background: rgba(255, 255, 255, 0.22); }
+.home-btn-ghost .gear-icon {
+  width: 17px;
+  height: 17px;
+  vertical-align: -3px;
+  margin-right: 6px;
+}
+.home-foot { margin-top: 22px; font-size: 13px; color: #8a8a8a; }
+.home-foot .ver { color: #ffd75e; }
+.home-records {
+  width: 300px;
+  flex-shrink: 0;
+  align-self: flex-start;
+  background: rgba(20, 22, 28, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+  padding: 20px;
+}
+.home-records h2 {
+  font-size: 17px;
+  letter-spacing: 2px;
+  color: #ffd75e;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  padding-bottom: 10px;
+}
+.record-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 14px;
+}
+.record-row:last-child { border-bottom: none; }
+.record-row .record-label { color: #cfcfcf; flex-shrink: 0; }
+.record-row .record-value { font-weight: bold; color: #fff; text-align: right; }
+.record-row .record-value.gold { color: #ffd75e; }
+.records-empty { padding: 16px 0 4px; font-size: 14px; line-height: 1.7; color: #a9a9a9; }
+
+/* ---------- 操作说明 ---------- */
+#help-overlay { z-index: 35; }
+body.help-open { touch-action: auto; }
+.help-panel {
+  max-width: 600px;
+  max-height: calc(100vh - 60px);
+  max-height: calc(100dvh - 60px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  text-align: left;
+}
+.help-panel h2 { font-size: 22px; text-align: center; letter-spacing: 2px; }
+.help-section { margin-top: 18px; }
+.help-section h3 {
+  font-size: 15px;
+  color: #ffd75e;
+  margin-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  padding-bottom: 6px;
+}
+.help-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  font-size: 14px;
+}
+.help-row .help-key { color: #ffd75e; font-weight: bold; text-align: right; flex-shrink: 0; }
+.help-note { margin-top: 8px; font-size: 13px; line-height: 1.7; color: #a9a9a9; }
+
+@media (max-width: 700px) {
+  .home { flex-direction: column; gap: 16px; }
+  .home-title { font-size: 40px; letter-spacing: 4px; }
+  .home-records { width: 100%; }
 }

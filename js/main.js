@@ -1,17 +1,18 @@
-// 靶场 v0.6 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
+// 靶场 v0.7 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
 // 渲染：Three.js（CDN）；输入：Pointer Lock + 触屏；毁伤：damage.js 纯函数；
-// 失血：bleeding.js 纯函数（假人 + 玩家）。
-// 缓存策略：全部本地模块带 ?v=0.6 查询串，版本升级即换地址，避免新旧文件混版。
+// 失血：bleeding.js 纯函数（假人 + 玩家）；记录：records.js 纯函数 + localStorage。
+// 缓存策略：全部本地模块带 ?v=0.7 查询串，版本升级即换地址，避免新旧文件混版。
 
 import * as THREE from 'three';
-import { createControls } from './controls.js?v=0.6';
-import { createGun } from './gun.js?v=0.6';
-import { createTargets } from './targets.js?v=0.6';
-import { createRange } from './range.js?v=0.6';
-import { createHud } from './hud.js?v=0.6';
-import { createAudio } from './audio.js?v=0.6';
-import { createSettingsStore, initSettingsPanel } from './settings.js?v=0.6';
-import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.6';
+import { createControls } from './controls.js?v=0.7';
+import { createGun } from './gun.js?v=0.7';
+import { createTargets } from './targets.js?v=0.7';
+import { createRange } from './range.js?v=0.7';
+import { createHud } from './hud.js?v=0.7';
+import { createAudio } from './audio.js?v=0.7';
+import { createSettingsStore, initSettingsPanel, KEY_ACTIONS, keyLabel } from './settings.js?v=0.7';
+import { createRecordsStore } from './records.js?v=0.7';
+import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.7';
 import {
   createBleedState,
   rollBleed,
@@ -26,11 +27,11 @@ import {
   bleedSpeedFactor,
   bleedVignetteOpacity,
   bleedSwayAmplitude,
-} from './bleeding.js?v=0.6';
+} from './bleeding.js?v=0.7';
 
-// 唯一版本号：由脚本写进开始界面的版本标签，显示的版本即脚本版本，
-// 旧脚本缓存不会谎报新版本（HTML 里的 v0.6 只是加载前的占位文案）。
-const VERSION = '0.6';
+// 唯一版本号：由脚本写进主页的版本标签，显示的版本即脚本版本，
+// 旧脚本缓存不会谎报新版本（HTML 里的 v0.7 只是加载前的占位文案）。
+const VERSION = '0.7';
 
 const MAG_SIZE = 30;
 const RELOAD_TIME = 1.8;
@@ -70,6 +71,7 @@ const range = createRange({ scene });
 const hud = createHud();
 const audio = createAudio();
 const settings = createSettingsStore();
+const recordsStore = createRecordsStore();
 // 失血导致模块损毁时，targets 通过事件回调让主循环写日志/弹提示。
 const targets = createTargets({
   scene,
@@ -207,7 +209,7 @@ function resolveCollisions(pos) {
   }
 }
 // ---------- 玩家受伤 / 失血 / 包扎 / 倒地 ----------
-// 玩家受伤接口：未来的敌人命中玩家时调用。v0.6 只有设置里的“模拟受伤”
+// 玩家受伤接口：未来的敌人命中玩家时调用。当前版本只有设置里的“模拟受伤”
 // 测试钩子调用它。severity 为命中严重度 0..1（由毁伤模型给出）。
 function playerTakeHit(zone, severity = 0.4) {
   const z = ZONE_LABELS[zone] ? zone : 'abdomen';
@@ -276,6 +278,7 @@ const score = {
   hits: 0,
   zoneCounts: { head: 0, chest: 0, abdomen: 0, arm: 0, leg: 0 },
 };
+let clearAnnounced = false; // 本局是否已播报过“全部清除”（重置靶子/新一局后复位）
 
 // ---------- 特效：曳光、命中火花、弹壳 ----------
 const tracers = [];
@@ -590,6 +593,7 @@ function toggleMode() {
 
 function resetTargets() {
   targets.reset();
+  clearAnnounced = false; // 重置后可以再次达成并播报全清
   hud.addLog('靶子已重置');
   hud.toast('靶子已重置');
 }
@@ -603,12 +607,109 @@ controls.on('bandageToggle', (on) => {
   // 事件只在点按瞬间发一次，不会每帧重复。
   if (on && playing && !isBleeding(playerBleed)) hud.toast('没有失血，无需包扎');
 });
+const pauseSub = document.getElementById('pause-sub');
 controls.on('lockLost', () => {
-  if (playing && !controls.isTouch) hud.showPause();
+  if (playing && !controls.isTouch) {
+    if (pauseSub) pauseSub.textContent = '指针锁定已解除';
+    hud.showPause();
+  }
 });
+
+// ---------- 主页记录 ----------
+function formatElapsed(sec) {
+  const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+  const ss = String(Math.floor(sec % 60)).padStart(2, '0');
+  return `${mm}:${ss}`;
+}
+
+// 主页记录面板：只显示存下的真实数据，没有记录时显示空状态，永不造假数字。
+function renderRecords() {
+  const body = document.getElementById('records-body');
+  if (!body) return;
+  const r = recordsStore.get();
+  if (r.totalSessions === 0) {
+    body.innerHTML = '<p class="records-empty">暂无记录，去靶场打一局</p>';
+    return;
+  }
+  const rows = [
+    ['最高命中率', r.bestAccuracy
+      ? `${Math.round(r.bestAccuracy.accuracy * 100)}%（${r.bestAccuracy.hits}/${r.bestAccuracy.shots} 发）`
+      : '—', true],
+    ['最多命中', r.mostHits === null ? '—' : `${r.mostHits} 发`, false],
+    ['最快全清', r.fastestClear === null ? '—' : formatElapsed(r.fastestClear), true],
+    ['总场次', `${r.totalSessions} 场`, false],
+  ];
+  if (r.lastSession) {
+    const ls = r.lastSession;
+    rows.push(['上次成绩',
+      `${Math.round(ls.accuracy * 100)}% · ${ls.hits}/${ls.shots} 发 · ${formatElapsed(ls.elapsedSec)}${ls.cleared ? ' · 已全清' : ''}`,
+      false]);
+  }
+  body.innerHTML = rows.map(([label, value, gold]) =>
+    `<div class="record-row"><span class="record-label">${label}</span>` +
+    `<span class="record-value${gold ? ' gold' : ''}">${value}</span></div>`).join('');
+}
+
+// ---------- 局内状态重置 / 结算 / 回主页 ----------
+// 新一局开始前（进入靶场）和回主页时都调：计分、弹药、靶子、玩家位置与失血、
+// 换弹/包扎/倒地状态全部复位，下一局从干净状态开始。
+function resetSession() {
+  score.shots = 0;
+  score.hits = 0;
+  score.zoneCounts = { head: 0, chest: 0, abdomen: 0, arm: 0, leg: 0 };
+  ammo = MAG_SIZE;
+  reloading = false;
+  reloadStage = 0;
+  gun.setReloading(false);
+  hud.setReloading(false);
+  cancelBandage();
+  collapsing = false;
+  collapseT = 0;
+  collapseRespawned = false;
+  hud.setCollapseFade(0);
+  hud.setBleedVignette(0);
+  hud.setBandaging(false);
+  respawnPlayer();
+  targets.reset();
+  clearAnnounced = false;
+  nextShotAt = 0;
+  prevFiring = false;
+  hudTimer = 0;
+  hud.setAmmo(MAG_SIZE, '∞');
+  hud.setScore({ shots: 0, hits: 0, zoneCounts: score.zoneCounts, elapsedSec: 0 });
+  hud.clearLog();
+}
+
+// 结算一场：只有开过火的场次才计入记录，0 发的空场次不污染总场次与上次成绩。
+function endSession() {
+  if (score.shots <= 0) return;
+  const elapsed = playing ? performance.now() / 1000 - startedAt : 0;
+  recordsStore.recordSession({
+    shots: score.shots,
+    hits: score.hits,
+    elapsedSec: Math.max(0, Math.round(elapsed)),
+    cleared: targets.getClearState().cleared,
+  });
+}
+
+function goHome() {
+  endSession();
+  playing = false; // 先停局内逻辑：随后解除指针锁定触发的 lockLost 不会再弹出暂停
+  if (document.exitPointerLock) document.exitPointerLock();
+  controls.setAimActive(false);
+  controls.clearBandageLatch();
+  resetSession();
+  renderRecords();
+  hud.hidePause();
+  hud.showStart();
+  document.body.classList.add('home'); // 回主页：隐藏局内 HUD
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+}
 
 // ---------- 开始 / 暂停 ----------
 function startGame() {
+  resetSession();
+  document.body.classList.remove('home'); // 进靶场：显示局内 HUD
   playing = true;
   startedAt = performance.now() / 1000;
   audio.unlock(); // 用户手势中创建/恢复 AudioContext
@@ -616,7 +717,6 @@ function startGame() {
   hud.hidePause();
   controls.requestPointerLock();
   hud.addLog('靶场已就绪，开始射击');
-  hud.setScore({ shots: 0, hits: 0, zoneCounts: score.zoneCounts, elapsedSec: 0 });
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 }
 
@@ -627,12 +727,60 @@ document.getElementById('btn-resume').addEventListener('click', () => {
   controls.requestPointerLock();
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 });
+document.getElementById('btn-home').addEventListener('click', goHome);
+document.getElementById('btn-pause').addEventListener('click', () => {
+  if (!playing) return;
+  if (pauseSub) pauseSub.textContent = '点继续回到靶场';
+  hud.showPause();
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+});
 canvas.addEventListener('click', () => {
   if (playing && !controls.isTouch && !controls.state.pointerLocked) {
     controls.requestPointerLock();
     hud.hidePause();
   }
 });
+
+// ---------- 操作说明 ----------
+const helpOverlay = document.getElementById('help-overlay');
+const helpBody = document.getElementById('help-body');
+function openHelp() {
+  if (!helpOverlay || !helpBody) return;
+  const keyRows = KEY_ACTIONS.map((a) =>
+    `<div class="help-row"><span>${a.label}</span><span class="help-key">${keyLabel(settings.state.keys[a.id])}</span></div>`).join('');
+  helpBody.innerHTML = `
+    <div class="help-section"><h3>桌面端（键鼠）</h3>
+      <div class="help-row"><span>瞄准</span><span class="help-key">鼠标</span></div>
+      <div class="help-row"><span>射击</span><span class="help-key">左键</span></div>
+      <div class="help-row"><span>机瞄</span><span class="help-key">右键（按住）</span></div>
+      ${keyRows}
+    </div>
+    <div class="help-section"><h3>触屏（iPad）</h3>
+      <div class="help-row"><span>移动</span><span class="help-key">左半屏虚拟摇杆</span></div>
+      <div class="help-row"><span>转动视角</span><span class="help-key">右半屏滑动</span></div>
+      <div class="help-row"><span>射击 / 机瞄 / 换弹 / 切换模式</span><span class="help-key">右侧圆形按键</span></div>
+      <div class="help-row"><span>跳跃 / 包扎</span><span class="help-key">右侧圆形按键</span></div>
+      <div class="help-row"><span>按钮位置与大小</span><span class="help-key">设置里拖拽编辑</span></div>
+    </div>
+    <div class="help-section"><h3>毁伤与失血</h3>
+      <p class="help-note">假人分头 / 胸 / 腹 / 手臂 / 腿部五个模块，命中按部位与入射角判定贯穿、擦伤或骨骼偏转；跳弹只发生在钢板、墙体等硬表面。命中可能触发失血，持续加重模块毁伤；玩家受伤后也会失血（红屏、晃动、减速随失血量渐变加重），用包扎键止血，失血过多会倒地重生。</p>
+    </div>`;
+  helpOverlay.classList.add('show');
+  document.body.classList.add('help-open'); // 放开触屏滚动，面板才能滑动
+  hud.hideStart();
+}
+function closeHelp() {
+  if (!helpOverlay) return;
+  helpOverlay.classList.remove('show');
+  document.body.classList.remove('help-open');
+  hud.showStart();
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+}
+document.getElementById('btn-help').addEventListener('click', () => {
+  openHelp();
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+});
+document.getElementById('btn-help-close').addEventListener('click', closeHelp);
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -876,6 +1024,14 @@ function animate() {
     if (hudTimer > 0.25) {
       hudTimer = 0;
       hud.setScore({ shots: score.shots, hits: score.hits, zoneCounts: score.zoneCounts, elapsedSec: elapsed });
+      // 全清判定：纸靶（含移动靶）全倒 + 钢板全倒 + 假人失能。达成即时保存
+      // 最快全清（不等回主页结算），每局只播报一次。
+      if (!clearAnnounced && targets.getClearState().cleared) {
+        clearAnnounced = true;
+        recordsStore.recordClear(Math.max(0, Math.round(elapsed)));
+        hud.addLog(`全部清除！用时 ${formatElapsed(elapsed)}`, 'ricochet');
+        hud.toast('全部清除！');
+      }
     }
   } else {
     // 菜单状态：镜头缓缓扫视靶场
@@ -892,12 +1048,17 @@ function animate() {
 }
 
 // 版本标签由脚本写入：显示的版本即实际运行的脚本版本。
-const verEl = document.querySelector('#start-overlay .ver');
-if (verEl) verEl.textContent = `v${VERSION}`;
+// 主页上有两处版本标签（标题旁 + 页脚），全部写一遍。
+document.querySelectorAll('#start-overlay .ver').forEach((el) => {
+  el.textContent = `v${VERSION}`;
+});
 
 // 调试钩子：仅供自动化验证读取状态与驱动测试场景，不影响游戏。
 window.__impasseDebug = {
   version: VERSION,
+  get playing() { return playing; },
+  get records() { return recordsStore.get(); },
+  get clearState() { return targets.getClearState(); },
   get playerY() { return player.pos.y; },
   get feetY() { return player.pos.y - EYE_HEIGHT; },
   get cameraY() { return camera.position.y; },
@@ -933,5 +1094,6 @@ window.__impasseDebug = {
 hud.setAmmo(MAG_SIZE, '∞');
 hud.setFireMode(fireMode);
 hud.setCrosshair(0, true);
+renderRecords();
 hud.showStart();
 animate();
