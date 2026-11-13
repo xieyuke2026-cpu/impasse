@@ -1,7 +1,10 @@
 // 输入控制：桌面端（Pointer Lock + 键鼠）与触屏端（虚拟摇杆 + 滑动视角 + 按钮）
 // 触屏是第一公民：iPad 上只用触摸就能完成全部操作。
+// 键位、触屏灵敏度、机瞄方式等来自 settings.js，可由玩家自定义。
 
-export function createControls({ canvas, elements }) {
+import { DEFAULT_KEYS } from './settings.js';
+
+export function createControls({ canvas, elements, settings }) {
   const isTouch =
     typeof window !== 'undefined' &&
     ('ontouchstart' in window || navigator.maxTouchPoints > 0);
@@ -26,14 +29,31 @@ export function createControls({ canvas, elements }) {
     (listeners[name] = listeners[name] || []).push(fn);
   };
 
-  // ---------- 键盘 ----------
+  let suspended = false; // 设置面板打开时：忽略全部游戏输入
+  let layoutEditing = false; // 布局编辑中：触屏按钮不触发动作，只响应拖拽
+
+  // ---------- 键盘（键位可重绑，见 settings.js） ----------
   const keys = new Set();
+  const boundKeys = () => (settings ? settings.state.keys : DEFAULT_KEYS);
+  // 方向键是移动的固定备用键；一旦被绑到其它动作上，备用关系自动让位。
+  function arrowFree(code) {
+    const k = boundKeys();
+    return k.jump !== code && k.reload !== code && k.fireMode !== code &&
+      k.reset !== code && k.sprint !== code;
+  }
   window.addEventListener('keydown', (e) => {
     if (e.repeat) return;
+    if (settings && settings.capturing) return; // 键位录入中：不触发游戏动作
+    if (suspended) return;
     keys.add(e.code);
-    if (e.code === 'KeyR') emit('reload');
-    if (e.code === 'KeyV') emit('toggleMode');
-    if (e.code === 'KeyT') emit('reset');
+    const k = boundKeys();
+    if (e.code === k.reload) emit('reload');
+    if (e.code === k.fireMode) emit('toggleMode');
+    if (e.code === k.reset) emit('reset');
+    if (e.code === k.jump) {
+      e.preventDefault(); // 防止空格激活获得焦点的按钮
+      emit('jump');
+    }
   });
   window.addEventListener('keyup', (e) => keys.delete(e.code));
   window.addEventListener('blur', () => {
@@ -153,8 +173,10 @@ export function createControls({ canvas, elements }) {
       e.preventDefault();
       for (const t of e.changedTouches) {
         if (t.identifier === lookTouch.id) {
-          lookDX += (t.clientX - lookTouch.lx) * 2.2;
-          lookDY += (t.clientY - lookTouch.ly) * 2.2;
+          // 触屏灵敏度：基准系数 2.2 × 设置倍率（桌面鼠标不受影响）
+          const sens = 2.2 * (settings ? settings.state.touchSensitivity : 1);
+          lookDX += (t.clientX - lookTouch.lx) * sens;
+          lookDY += (t.clientY - lookTouch.ly) * sens;
           lookTouch.lx = t.clientX;
           lookTouch.ly = t.clientY;
         }
@@ -175,18 +197,21 @@ export function createControls({ canvas, elements }) {
     el.addEventListener('touchstart', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (layoutEditing) return;
       el.classList.add('active');
       down();
     }, { passive: false });
     const release = (e) => {
       e.preventDefault();
       el.classList.remove('active');
+      if (layoutEditing) return;
       up();
     };
     el.addEventListener('touchend', release);
     el.addEventListener('touchcancel', release);
     el.addEventListener('mousedown', (e) => {
       e.preventDefault();
+      if (layoutEditing) return;
       el.classList.add('active');
       down();
     });
@@ -206,25 +231,75 @@ export function createControls({ canvas, elements }) {
     el.addEventListener('touchstart', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (layoutEditing) return;
       fn();
     }, { passive: false });
     el.addEventListener('click', (e) => {
       e.preventDefault();
+      if (layoutEditing) return;
       fn();
+      if (el.blur) el.blur(); // 防止空格键再次激活获得焦点的按钮
     });
   }
 
   bindHold(elements.btnFire,
     () => { state.firing = true; },
     () => { state.firing = false; });
-  bindTap(elements.btnAim, () => {
-    state.aiming = !state.aiming;
-    elements.btnAim.classList.toggle('toggled', state.aiming);
-    emit('aimToggle', state.aiming);
-  });
+
+  // 瞄准键：切换模式（点按切换）或按住模式（按住才机瞄），由设置决定。
+  // 触屏走 touchstart/touchend（touchstart 的 preventDefault 会抑制随后的合成 click）；
+  // 鼠标在切换模式走 click，在按住模式走 mousedown/mouseup。
+  const aimEl = elements.btnAim;
+  if (aimEl) {
+    const holdMode = () => settings && settings.state.adsMode === 'hold';
+    aimEl.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (layoutEditing) return;
+      aimEl.classList.add('active');
+      if (holdMode()) setAimActive(true);
+      else {
+        setAimActive(!state.aiming);
+        emit('aimToggle', state.aiming);
+      }
+    }, { passive: false });
+    const aimRelease = (e) => {
+      e.preventDefault();
+      aimEl.classList.remove('active');
+      if (holdMode()) setAimActive(false);
+    };
+    aimEl.addEventListener('touchend', aimRelease);
+    aimEl.addEventListener('touchcancel', aimRelease);
+    aimEl.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      if (layoutEditing) return;
+      aimEl.classList.add('active');
+      if (holdMode()) setAimActive(true);
+    });
+    aimEl.addEventListener('mouseup', () => {
+      aimEl.classList.remove('active');
+      if (holdMode()) setAimActive(false);
+    });
+    aimEl.addEventListener('mouseleave', () => {
+      if (aimEl.classList.contains('active')) {
+        aimEl.classList.remove('active');
+        if (holdMode()) setAimActive(false);
+      }
+    });
+    aimEl.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (layoutEditing) return;
+      if (!holdMode()) {
+        setAimActive(!state.aiming);
+        emit('aimToggle', state.aiming);
+      }
+      if (aimEl.blur) aimEl.blur();
+    });
+  }
   bindTap(elements.btnReload, () => emit('reload'));
   bindTap(elements.btnMode, () => emit('toggleMode'));
   bindTap(elements.btnReset, () => emit('reset'));
+  bindTap(elements.btnJump, () => emit('jump'));
 
   function setAimActive(active) {
     state.aiming = active;
@@ -233,12 +308,19 @@ export function createControls({ canvas, elements }) {
 
   // ---------- 每帧更新 ----------
   function update() {
+    if (suspended || layoutEditing) {
+      state.moveX = 0;
+      state.moveY = 0;
+      state.sprint = false;
+      return;
+    }
+    const k = boundKeys();
     let x = 0;
     let y = 0;
-    if (keys.has('KeyW') || keys.has('ArrowUp')) y += 1;
-    if (keys.has('KeyS') || keys.has('ArrowDown')) y -= 1;
-    if (keys.has('KeyA') || keys.has('ArrowLeft')) x -= 1;
-    if (keys.has('KeyD') || keys.has('ArrowRight')) x += 1;
+    if (keys.has(k.forward) || (arrowFree('ArrowUp') && keys.has('ArrowUp'))) y += 1;
+    if (keys.has(k.back) || (arrowFree('ArrowDown') && keys.has('ArrowDown'))) y -= 1;
+    if (keys.has(k.left) || (arrowFree('ArrowLeft') && keys.has('ArrowLeft'))) x -= 1;
+    if (keys.has(k.right) || (arrowFree('ArrowRight') && keys.has('ArrowRight'))) x += 1;
     if (joystick.active) {
       x = joystick.x;
       y = joystick.y;
@@ -250,14 +332,36 @@ export function createControls({ canvas, elements }) {
     }
     state.moveX = x;
     state.moveY = y;
-    state.sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
+    // 疾跑默认左 Shift：左右 Shift 都认；一旦重绑到其它键，就只认绑定的键。
+    state.sprint = keys.has(k.sprint) ||
+      ((k.sprint === 'ShiftLeft' || k.sprint === 'ShiftRight') &&
+        (keys.has('ShiftLeft') || keys.has('ShiftRight')));
   }
 
   function consumeLook() {
+    if (suspended) {
+      lookDX = 0;
+      lookDY = 0;
+      return { dx: 0, dy: 0 };
+    }
     const out = { dx: lookDX, dy: lookDY };
     lookDX = 0;
     lookDY = 0;
     return out;
+  }
+
+  function setSuspended(v) {
+    suspended = v;
+    if (v) {
+      keys.clear();
+      state.firing = false;
+      setAimActive(false);
+    }
+  }
+
+  function setLayoutEditing(v) {
+    layoutEditing = v;
+    if (v) state.firing = false;
   }
 
   return {
@@ -268,5 +372,7 @@ export function createControls({ canvas, elements }) {
     consumeLook,
     requestPointerLock,
     setAimActive,
+    setSuspended,
+    setLayoutEditing,
   };
 }

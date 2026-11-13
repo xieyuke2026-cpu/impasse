@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>IMPASSE — 靶场 v0.2</title>
+<title>IMPASSE — 靶场 v0.3</title>
 <link rel="stylesheet" href="css/style.css">
 <script type="importmap">
 {
@@ -63,23 +63,32 @@
   <button id="btn-aim" type="button" aria-label="瞄准"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><line x1="12" y1="1.5" x2="12" y2="7"/><line x1="12" y1="17" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="7" y2="12"/><line x1="17" y1="12" x2="22.5" y2="12"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></button>
   <button id="btn-reload" type="button" aria-label="换弹"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
   <button id="btn-mode" type="button" aria-label="射击模式" class="auto"><svg class="icon-auto" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><g transform="translate(-7.2,3) scale(0.7)"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></g><g transform="translate(0,3) scale(0.7)"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></g><g transform="translate(7.2,3) scale(0.7)"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></g></svg><svg class="icon-semi" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></svg></button>
+  <button id="btn-jump" type="button" aria-label="跳跃"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="20" x2="12" y2="5"/><polyline points="5 11 12 4 19 11"/></svg></button>
+</div>
+
+<!-- 布局编辑条（仅编辑布局时显示） -->
+<div id="layout-edit-bar">
+  <span>拖动按钮调整位置</span>
+  <button id="btn-layout-reset" type="button">恢复默认布局</button>
+  <button id="btn-layout-done" type="button">完成</button>
 </div>
 
 <!-- 开始界面 -->
 <div id="start-overlay" class="overlay show">
   <div class="panel">
-    <h1>IMPASSE <span class="ver">v0.2</span></h1>
+    <h1>IMPASSE <span class="ver">v0.3</span></h1>
     <p class="sub">靶场模式 · 第一人称射击原型 · 无血条 · 模块化毁伤判定</p>
     <div class="controls-desktop">
       <p><b>WASD</b> 移动 · <b>鼠标</b> 瞄准 · <b>左键</b> 射击 · <b>右键</b> 机瞄</p>
-      <p><b>R</b> 换弹 · <b>V</b> 切换单发/连发 · <b>Shift</b> 疾跑 · <b>T</b> 重置靶子</p>
+      <p><b>R</b> 换弹 · <b>V</b> 切换单发/连发 · <b>Shift</b> 疾跑 · <b>空格</b> 跳跃 · <b>T</b> 重置靶子</p>
     </div>
     <div class="controls-touch">
       <p><b>左半屏</b> 虚拟摇杆移动 · <b>右半屏滑动</b> 转动视角</p>
-      <p><b>开火键</b> 射击 · <b>瞄准键</b> 机瞄 · <b>换弹键</b> 换弹</p>
+      <p><b>开火键</b> 射击 · <b>瞄准键</b> 机瞄 · <b>换弹键</b> 换弹 · <b>跳跃键</b> 跳跃</p>
     </div>
     <p class="note">假人分头 / 胸 / 腹 / 手臂 / 腿部五个模块，命中按部位与入射角判定贯穿、擦伤或骨骼偏转；跳弹只发生在钢板、墙体等硬表面。</p>
     <button id="btn-start" type="button">点击开始</button>
+    <button id="btn-settings-start" type="button" class="btn-ghost"><svg class="gear-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置</button>
   </div>
 </div>
 
@@ -89,7 +98,13 @@
     <h1>已暂停</h1>
     <p class="sub">指针锁定已解除</p>
     <button id="btn-resume" type="button">点击继续</button>
+    <button id="btn-settings-pause" type="button" class="btn-ghost"><svg class="gear-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置</button>
   </div>
+</div>
+
+<!-- 设置界面（内容由 js/settings.js 生成） -->
+<div id="settings-overlay" class="overlay">
+  <div class="panel settings-panel" id="settings-panel"></div>
 </div>
 
 <script type="module" src="js/main.js"></script>

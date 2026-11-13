@@ -246,8 +246,8 @@ body.touch #hud-bl { left: 20px; bottom: 170px; }
   background: rgba(0, 0, 0, 0.4);
   color: #fff;
 }
-#touch-ui button svg { width: 30px; height: 30px; display: block; }
-#btn-fire svg { width: 46px; height: 46px; }
+#touch-ui button svg { width: calc(30px * var(--btn-scale, 1)); height: calc(30px * var(--btn-scale, 1)); display: block; }
+#btn-fire svg { width: calc(46px * var(--btn-scale, 1)); height: calc(46px * var(--btn-scale, 1)); }
 /* 模式按钮：连发显示三发子弹，单发显示一发子弹 */
 #btn-mode .icon-semi { display: none; }
 #btn-mode:not(.auto) .icon-semi { display: block; }
@@ -258,17 +258,70 @@ body.touch #hud-bl { left: 20px; bottom: 170px; }
   border-color: #ffd75e;
   color: #ffd75e;
 }
+/* 按钮大小与间距都随 --btn-scale 缩放（设置里调），默认 1 时与旧布局一致 */
 #btn-fire {
-  right: 26px;
-  bottom: 36px;
-  width: 88px;
-  height: 88px;
+  right: calc(26px * var(--btn-scale, 1));
+  bottom: calc(36px * var(--btn-scale, 1));
+  width: calc(88px * var(--btn-scale, 1));
+  height: calc(88px * var(--btn-scale, 1));
   font-size: 19px;
   border-color: rgba(255, 120, 90, 0.7);
 }
-#btn-aim { right: 134px; bottom: 52px; width: 60px; height: 60px; }
-#btn-reload { right: 40px; bottom: 146px; width: 60px; height: 60px; }
-#btn-mode { right: 134px; bottom: 140px; width: 60px; height: 60px; }
+#btn-aim { right: calc(134px * var(--btn-scale, 1)); bottom: calc(52px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); }
+#btn-reload { right: calc(40px * var(--btn-scale, 1)); bottom: calc(146px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); }
+#btn-mode { right: calc(134px * var(--btn-scale, 1)); bottom: calc(140px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); }
+#btn-jump { right: calc(40px * var(--btn-scale, 1)); bottom: calc(250px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); }
+
+/* 摇杆在右：摇杆区/视角区与按钮组整体镜像，弹药 HUD 让到右侧 */
+body.joystick-right #joystick-zone { left: auto; right: 0; }
+body.joystick-right #look-zone { right: auto; left: 0; }
+body.joystick-right #hud-bl { left: auto; right: 20px; }
+body.joystick-right #btn-fire { right: auto; left: calc(26px * var(--btn-scale, 1)); }
+body.joystick-right #btn-aim { right: auto; left: calc(134px * var(--btn-scale, 1)); }
+body.joystick-right #btn-reload { right: auto; left: calc(40px * var(--btn-scale, 1)); }
+body.joystick-right #btn-mode { right: auto; left: calc(134px * var(--btn-scale, 1)); }
+body.joystick-right #btn-jump { right: auto; left: calc(40px * var(--btn-scale, 1)); }
+
+/* 布局编辑：强制显示触屏按钮（桌面端也能调），按钮可拖拽 */
+body.layout-edit #touch-ui { display: block; }
+body.layout-edit #joystick-zone,
+body.layout-edit #look-zone { pointer-events: none; }
+body.layout-edit #touch-ui button { outline: 2px dashed #ffd75e; outline-offset: 2px; cursor: grab; }
+body.layout-edit #touch-ui button.dragging { cursor: grabbing; outline-style: solid; }
+#layout-edit-bar {
+  display: none;
+  position: fixed;
+  top: calc(16px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 45;
+  align-items: center;
+  gap: 12px;
+  background: rgba(20, 22, 28, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 14px;
+  white-space: nowrap;
+}
+body.layout-edit #layout-edit-bar { display: flex; }
+#layout-edit-bar button {
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 14px;
+  cursor: pointer;
+}
+#btn-layout-reset {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+#btn-layout-done {
+  background: #ffd75e;
+  color: #1a1c20;
+  border: none;
+  font-weight: bold;
+}
 
 /* ---------- 浮层 ---------- */
 .overlay {
@@ -319,6 +372,98 @@ body.touch .panel .controls-touch { display: block; }
   cursor: pointer;
 }
 .panel button:active { background: #f2c94b; }
+.panel button.btn-ghost {
+  margin-top: 12px;
+  margin-left: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  padding: 12px 26px;
+  font-size: 15px;
+}
+.panel button.btn-ghost:active { background: rgba(255, 255, 255, 0.22); }
+.panel button .gear-icon {
+  width: 17px;
+  height: 17px;
+  vertical-align: -3px;
+  margin-right: 6px;
+}
+
+/* ---------- 设置面板 ---------- */
+/* 游戏平时 body 是 touch-action: none；打开设置时放开，面板才能滚动、滑块才能拖 */
+body.settings-open { touch-action: auto; }
+#settings-overlay { z-index: 40; }
+.settings-panel {
+  max-width: 600px;
+  max-height: calc(100vh - 60px);
+  max-height: calc(100dvh - 60px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  text-align: left;
+  padding: 24px 22px;
+}
+.settings-panel h2 { font-size: 22px; text-align: center; letter-spacing: 2px; }
+.settings-section { margin-top: 20px; }
+.settings-section h3 {
+  font-size: 15px;
+  color: #ffd75e;
+  margin-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  padding-bottom: 6px;
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  font-size: 15px;
+}
+.setting-row label { flex: 1; }
+.setting-row input[type="range"] {
+  width: 180px;
+  height: 30px;
+  accent-color: #ffd75e;
+  cursor: pointer;
+}
+.setting-value { min-width: 46px; text-align: right; color: #cfcfcf; font-size: 14px; }
+.seg { display: flex; gap: 6px; }
+.seg button {
+  margin: 0;
+  padding: 9px 14px;
+  font-size: 14px;
+  font-weight: normal;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.seg button.selected {
+  background: rgba(255, 215, 94, 0.25);
+  border-color: #ffd75e;
+  color: #ffd75e;
+}
+.key-bind {
+  min-width: 116px;
+  margin: 0;
+  padding: 9px 12px;
+  font-size: 14px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.key-bind.capturing {
+  border-color: #ffd75e;
+  color: #ffd75e;
+  animation: key-blink 1s infinite;
+}
+@keyframes key-blink { 50% { opacity: 0.45; } }
+.settings-hint { margin-top: 8px; font-size: 13px; line-height: 1.6; color: #a9a9a9; }
+.settings-actions { display: flex; justify-content: center; margin-top: 22px; }
+.settings-actions button { margin-top: 0; }
 
 @media (max-width: 700px) {
   #damage-log { width: 220px; top: 96px; font-size: 12px; }

@@ -110,5 +110,12 @@ export function createAudio() {
     tone({ freq: 95, freqEnd: 60, dur: 0.09, type: 'sine', gain: 0.4 });
   }
 
-  return { unlock, shot, click, dryFire, tink, thud };
+  // 落地：比 thud 更轻更低的闷响
+  function land() {
+    if (!ensure()) return;
+    noiseHit({ dur: 0.09, filterType: 'lowpass', freq: 220, gain: 0.55 });
+    tone({ freq: 70, freqEnd: 45, dur: 0.09, type: 'sine', gain: 0.3 });
+  }
+
+  return { unlock, shot, click, dryFire, tink, thud, land };
 }

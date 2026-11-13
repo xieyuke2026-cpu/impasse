@@ -1,4 +1,4 @@
-// 靶场 v0.1 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
+// 靶场 v0.3 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
 // 渲染：Three.js（CDN）；输入：Pointer Lock + 触屏；毁伤：damage.js 纯函数。
 
 import * as THREE from 'three';
@@ -8,6 +8,7 @@ import { createTargets } from './targets.js';
 import { createRange } from './range.js';
 import { createHud } from './hud.js';
 import { createAudio } from './audio.js';
+import { createSettingsStore, initSettingsPanel } from './settings.js';
 import { evaluateHit, evaluateRicochet } from './damage.js';
 
 const MAG_SIZE = 30;
@@ -16,6 +17,10 @@ const AUTO_INTERVAL = 0.1; // 600 RPM
 const SEMI_INTERVAL = 0.14;
 const EYE_HEIGHT = 1.6;
 const BOUNDS = { x: 5.8, zMin: -1.5, zMax: 10.5 };
+const GRAVITY = 12; // m/s²
+const JUMP_VELOCITY = 4.6; // m/s，顶点约 0.88m
+const COYOTE_TIME = 0.08; // 土狼时间：离地后 0.08s 内仍可起跳
+const JUMP_BUFFER = 0.1; // 输入缓冲：落地前 0.1s 内的跳跃输入仍生效
 
 // ---------- 渲染器与场景 ----------
 const canvas = document.getElementById('game-canvas');
@@ -38,9 +43,11 @@ const targets = createTargets({ scene });
 const gun = createGun({ camera });
 const hud = createHud();
 const audio = createAudio();
+const settings = createSettingsStore();
 
 const controls = createControls({
   canvas,
+  settings,
   elements: {
     joystickZone: document.getElementById('joystick-zone'),
     joystickBase: document.getElementById('joystick-base'),
@@ -51,8 +58,10 @@ const controls = createControls({
     btnReload: document.getElementById('btn-reload'),
     btnMode: document.getElementById('btn-mode'),
     btnReset: document.getElementById('btn-reset'),
+    btnJump: document.getElementById('btn-jump'),
   },
 });
+initSettingsPanel({ store: settings, controls });
 if (controls.isTouch) document.body.classList.add('touch');
 
 const allHitMeshes = [...range.hitMeshes, ...targets.hitMeshes];
@@ -62,6 +71,11 @@ const colliders = [...range.colliders, ...targets.colliders];
 const player = {
   pos: new THREE.Vector3(0, EYE_HEIGHT, 8),
   vel: new THREE.Vector3(), // 水平速度（速度平滑用）
+  vy: 0, // 垂直速度（跳跃/重力）
+  grounded: true,
+  coyote: 0, // 土狼时间剩余
+  jumpBuffer: 0, // 跳跃输入缓冲剩余
+  landDip: 0, // 落地镜头下沉
   yaw: 0,
   pitch: 0,
   bobT: 0,
@@ -446,6 +460,7 @@ function resetTargets() {
 controls.on('reload', () => { if (playing) startReload(); });
 controls.on('toggleMode', () => { if (playing) toggleMode(); });
 controls.on('reset', () => { if (playing) resetTargets(); });
+controls.on('jump', () => { if (playing) player.jumpBuffer = JUMP_BUFFER; });
 controls.on('lockLost', () => {
   if (playing && !controls.isTouch) hud.showPause();
 });
@@ -460,6 +475,7 @@ function startGame() {
   controls.requestPointerLock();
   hud.addLog('靶场已就绪，开始射击');
   hud.setScore({ shots: 0, hits: 0, zoneCounts: score.zoneCounts, elapsedSec: 0 });
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 }
 
 document.getElementById('btn-start').addEventListener('click', startGame);
@@ -467,6 +483,7 @@ document.getElementById('btn-resume').addEventListener('click', () => {
   audio.unlock();
   hud.hidePause();
   controls.requestPointerLock();
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 });
 canvas.addEventListener('click', () => {
   if (playing && !controls.isTouch && !controls.state.pointerLocked) {
@@ -512,7 +529,8 @@ function animate() {
     const vx = mx * cos - my * sin;
     const vz = -my * cos - mx * sin;
     const hasInput = Math.hypot(mx, my) > 0.1;
-    const rate = hasInput ? 12 : 10;
+    // 空中水平加速度 0.8x；障碍物碰撞只看水平位置，跳跃不影响它
+    const rate = (hasInput ? 12 : 10) * (player.grounded ? 1 : 0.8);
     const k = Math.min(1, rate * dt);
     player.vel.x += (vx * speed - player.vel.x) * k;
     player.vel.z += (vz * speed - player.vel.z) * k;
@@ -524,10 +542,37 @@ function animate() {
     player.pos.x = THREE.MathUtils.clamp(player.pos.x, -BOUNDS.x, BOUNDS.x);
     player.pos.z = THREE.MathUtils.clamp(player.pos.z, BOUNDS.zMin, BOUNDS.zMax);
 
-    // 头部摆动：幅度随速度淡入淡出（停下不跳变），strafing 时轻微侧倾
+    // 跳跃：重力 + 土狼时间 + 输入缓冲；落地时镜头下沉 + 闷响
+    if (player.grounded) player.coyote = COYOTE_TIME;
+    else player.coyote = Math.max(0, player.coyote - dt);
+    player.jumpBuffer = Math.max(0, player.jumpBuffer - dt);
+    if (player.jumpBuffer > 0 && (player.grounded || player.coyote > 0)) {
+      player.vy = JUMP_VELOCITY;
+      player.grounded = false;
+      player.coyote = 0;
+      player.jumpBuffer = 0;
+    }
+    if (!player.grounded) {
+      player.vy -= GRAVITY * dt;
+      player.pos.y += player.vy * dt;
+      if (player.pos.y <= EYE_HEIGHT) {
+        player.pos.y = EYE_HEIGHT;
+        const impact = Math.min(1, -player.vy / 6);
+        if (impact > 0.25) {
+          player.landDip = 0.03 + 0.02 * impact;
+          audio.land();
+        }
+        player.vy = 0;
+        player.grounded = true;
+      }
+    }
+    if (player.landDip > 0) player.landDip = Math.max(0, player.landDip - dt * 0.2); // 约 0.25s 回弹
+
+    // 头部摆动：幅度随速度淡入淡出（停下不跳变），strafing 时轻微侧倾；空中不摆动
     const speedNow = Math.hypot(player.vel.x, player.vel.z);
     const speedNorm = Math.min(1, speedNow / 3.4);
-    player.bobAmp += (0.02 * speedNorm - player.bobAmp) * Math.min(1, 6 * dt);
+    const bobTarget = player.grounded ? 0.02 * speedNorm : 0;
+    player.bobAmp += (bobTarget - player.bobAmp) * Math.min(1, 6 * dt);
     if (speedNorm > 0.05) player.bobT += dt * (5 + 5 * speedNorm);
     const bobY = Math.sin(player.bobT) * player.bobAmp;
     const bobX = Math.cos(player.bobT * 0.5) * player.bobAmp * 0.4;
@@ -570,9 +615,9 @@ function animate() {
     }
     prevFiring = firing;
 
-    // 后坐力叠加到镜头（摆动横向分量沿镜头右侧方向）
+    // 后坐力叠加到镜头（摆动横向分量沿镜头右侧方向）；落地下沉直接扣在镜头高度上
     const recoil = gun.getRecoil();
-    camera.position.set(player.pos.x + bobX * cos, player.pos.y + bobY, player.pos.z - bobX * sin);
+    camera.position.set(player.pos.x + bobX * cos, player.pos.y + bobY - player.landDip, player.pos.z - bobX * sin);
     camera.rotation.y = player.yaw + recoil.yaw;
     camera.rotation.x = player.pitch + recoil.pitch;
     camera.rotation.z = player.lean;
@@ -608,6 +653,14 @@ function animate() {
   updateEffects(dt);
   renderer.render(scene, camera);
 }
+
+// 调试钩子：仅供自动化验证读取相机高度与设置状态，不影响游戏。
+window.__impasseDebug = {
+  get playerY() { return player.pos.y; },
+  get cameraY() { return camera.position.y; },
+  get grounded() { return player.grounded; },
+  settings: settings.state,
+};
 
 hud.setAmmo(MAG_SIZE, '∞');
 hud.setFireMode(fireMode);
