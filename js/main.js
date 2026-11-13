@@ -7,6 +7,7 @@ import { createGun } from './gun.js';
 import { createTargets } from './targets.js';
 import { createRange } from './range.js';
 import { createHud } from './hud.js';
+import { createAudio } from './audio.js';
 import { evaluateHit, evaluateRicochet } from './damage.js';
 
 const MAG_SIZE = 30;
@@ -36,6 +37,7 @@ const range = createRange({ scene });
 const targets = createTargets({ scene });
 const gun = createGun({ camera });
 const hud = createHud();
+const audio = createAudio();
 
 const controls = createControls({
   canvas,
@@ -54,14 +56,62 @@ const controls = createControls({
 if (controls.isTouch) document.body.classList.add('touch');
 
 const allHitMeshes = [...range.hitMeshes, ...targets.hitMeshes];
+const colliders = [...range.colliders, ...targets.colliders];
 
 // ---------- 玩家状态 ----------
 const player = {
   pos: new THREE.Vector3(0, EYE_HEIGHT, 8),
+  vel: new THREE.Vector3(), // 水平速度（速度平滑用）
   yaw: 0,
   pitch: 0,
   bobT: 0,
+  bobAmp: 0, // 摆动幅度，随速度淡入淡出
+  lean: 0, // strafing 侧倾
 };
+
+// 玩家圆形 vs 障碍物推离（圆形 vs AABB / 圆形）
+const PLAYER_RADIUS = 0.35;
+function resolveCollisions(pos) {
+  for (const c of colliders) {
+    if (c.type === 'aabb') {
+      const cx = THREE.MathUtils.clamp(pos.x, c.minX, c.maxX);
+      const cz = THREE.MathUtils.clamp(pos.z, c.minZ, c.maxZ);
+      const dx = pos.x - cx;
+      const dz = pos.z - cz;
+      const d2 = dx * dx + dz * dz;
+      if (d2 >= PLAYER_RADIUS * PLAYER_RADIUS) continue;
+      if (d2 > 1e-8) {
+        const d = Math.sqrt(d2);
+        pos.x = cx + (dx / d) * PLAYER_RADIUS;
+        pos.z = cz + (dz / d) * PLAYER_RADIUS;
+      } else {
+        // 圆心落在矩形内：沿最小穿透轴推出
+        const pl = pos.x - c.minX;
+        const pr = c.maxX - pos.x;
+        const pn = pos.z - c.minZ;
+        const pf = c.maxZ - pos.z;
+        const m = Math.min(pl, pr, pn, pf);
+        if (m === pl) pos.x = c.minX - PLAYER_RADIUS;
+        else if (m === pr) pos.x = c.maxX + PLAYER_RADIUS;
+        else if (m === pn) pos.z = c.minZ - PLAYER_RADIUS;
+        else pos.z = c.maxZ + PLAYER_RADIUS;
+      }
+    } else if (c.type === 'circle') {
+      const dx = pos.x - c.x;
+      const dz = pos.z - c.z;
+      const rr = PLAYER_RADIUS + c.r;
+      const d2 = dx * dx + dz * dz;
+      if (d2 >= rr * rr) continue;
+      if (d2 < 1e-8) {
+        pos.x = c.x + rr;
+      } else {
+        const d = Math.sqrt(d2);
+        pos.x = c.x + (dx / d) * rr;
+        pos.z = c.z + (dz / d) * rr;
+      }
+    }
+  }
+}
 let playing = false;
 let startedAt = 0;
 let ammo = MAG_SIZE;
@@ -77,9 +127,13 @@ const score = {
   zoneCounts: { head: 0, chest: 0, abdomen: 0, arm: 0, leg: 0 },
 };
 
-// ---------- 特效：曳光与命中火花 ----------
+// ---------- 特效：曳光、命中火花、弹壳 ----------
 const tracers = [];
 const impacts = [];
+const shells = [];
+const SHELL_POOL = 20;
+const UP_AXIS = new THREE.Vector3(0, 1, 0);
+const shellGeo = new THREE.CylinderGeometry(0.006, 0.0075, 0.026, 8);
 
 function sparkTexture() {
   const c = document.createElement('canvas');
@@ -98,33 +152,84 @@ function sparkTexture() {
 }
 const sparkTex = sparkTexture();
 
+// 曳光：细圆柱（线宽在多数平台上会被忽略，圆柱才能真正加粗）
 function spawnTracer(a, b, color = 0xffd27a) {
-  const geo = new THREE.BufferGeometry().setFromPoints([a, b]);
-  const mat = new THREE.LineBasicMaterial({
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  if (len < 0.01) return;
+  const geo = new THREE.CylinderGeometry(0.0045, 0.0045, len, 5, 1, true);
+  const mat = new THREE.MeshBasicMaterial({
     color,
     transparent: true,
-    opacity: 0.9,
+    opacity: 0.95,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
+    side: THREE.DoubleSide,
   });
-  const line = new THREE.Line(geo, mat);
-  scene.add(line);
-  tracers.push({ line, life: 0.07, maxLife: 0.07 });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(a).addScaledVector(dir, 0.5);
+  mesh.quaternion.setFromUnitVectors(UP_AXIS, dir.normalize());
+  scene.add(mesh);
+  tracers.push({ mesh, life: 0.08, maxLife: 0.08 });
 }
 
+// 命中火花：3–5 个带初速度的火花碎片，向外飞散
 function spawnImpact(point, big = false) {
-  const mat = new THREE.SpriteMaterial({
-    map: sparkTex,
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-  const sprite = new THREE.Sprite(mat);
-  sprite.position.copy(point);
-  const s = big ? 0.3 : 0.18;
-  sprite.scale.setScalar(s);
-  scene.add(sprite);
-  impacts.push({ sprite, life: 0.22, maxLife: 0.22, size: s });
+  const n = big ? 5 : 3;
+  for (let i = 0; i < n; i++) {
+    const mat = new THREE.SpriteMaterial({
+      map: sparkTex,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.position.copy(point);
+    const s = (big ? 0.22 : 0.14) * (0.7 + Math.random() * 0.6);
+    sprite.scale.setScalar(s);
+    scene.add(sprite);
+    const speed = big ? 1.4 : 1;
+    const vel = new THREE.Vector3(
+      (Math.random() - 0.5) * 2 * speed,
+      (Math.random() * 1.6 + 0.4) * speed,
+      (Math.random() - 0.5) * 2 * speed
+    );
+    const life = 0.28 + Math.random() * 0.14;
+    impacts.push({ sprite, vel, life, maxLife: life, size: s });
+  }
+}
+
+// 弹壳：对象池，抛壳口弹出、向右翻滚、落地弹跳一次、1.5s 后淡出
+function spawnShell(origin, rightDir, shotDir) {
+  let s = shells.find((x) => !x.active);
+  if (!s) {
+    if (shells.length >= SHELL_POOL) {
+      s = shells[0]; // 池满：复用最旧的
+    } else {
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xc9a227,
+        roughness: 0.35,
+        metalness: 0.8,
+        transparent: true,
+      });
+      const mesh = new THREE.Mesh(shellGeo, mat);
+      mesh.visible = false;
+      scene.add(mesh);
+      s = { mesh, vel: new THREE.Vector3(), angVel: new THREE.Vector3(), life: 0, bounced: false, active: false };
+      shells.push(s);
+    }
+  }
+  s.active = true;
+  s.bounced = false;
+  s.life = 1.5;
+  s.mesh.visible = true;
+  s.mesh.material.opacity = 1;
+  s.mesh.position.copy(origin);
+  s.mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, 0);
+  s.vel.copy(rightDir).multiplyScalar(1.6 + Math.random() * 0.9);
+  s.vel.y = 1.7 + Math.random() * 1.0;
+  s.vel.addScaledVector(shotDir, (Math.random() - 0.5) * 0.5);
+  s.angVel.set((Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20);
 }
 
 function updateEffects(dt) {
@@ -132,12 +237,12 @@ function updateEffects(dt) {
     const t = tracers[i];
     t.life -= dt;
     if (t.life <= 0) {
-      scene.remove(t.line);
-      t.line.geometry.dispose();
-      t.line.material.dispose();
+      scene.remove(t.mesh);
+      t.mesh.geometry.dispose();
+      t.mesh.material.dispose();
       tracers.splice(i, 1);
     } else {
-      t.line.material.opacity = (t.life / t.maxLife) * 0.9;
+      t.mesh.material.opacity = (t.life / t.maxLife) * 0.95;
     }
   }
   for (let i = impacts.length - 1; i >= 0; i--) {
@@ -148,10 +253,40 @@ function updateEffects(dt) {
       im.sprite.material.dispose();
       impacts.splice(i, 1);
     } else {
+      im.vel.y -= 3.5 * dt;
+      im.sprite.position.addScaledVector(im.vel, dt);
       const k = im.life / im.maxLife;
       im.sprite.material.opacity = k;
-      im.sprite.scale.setScalar(im.size * (1 + (1 - k) * 0.8));
+      im.sprite.scale.setScalar(im.size * (1 + (1 - k) * 0.6));
     }
+  }
+  for (const s of shells) {
+    if (!s.active) continue;
+    s.life -= dt;
+    if (s.life <= 0) {
+      s.active = false;
+      s.mesh.visible = false;
+      continue;
+    }
+    s.vel.y -= 9.8 * dt;
+    s.mesh.position.addScaledVector(s.vel, dt);
+    s.mesh.rotation.x += s.angVel.x * dt;
+    s.mesh.rotation.y += s.angVel.y * dt;
+    s.mesh.rotation.z += s.angVel.z * dt;
+    if (s.mesh.position.y <= 0.012) {
+      s.mesh.position.y = 0.012;
+      if (!s.bounced) {
+        s.vel.y *= -0.35;
+        s.vel.x *= 0.6;
+        s.vel.z *= 0.6;
+        s.angVel.multiplyScalar(0.5);
+        s.bounced = true;
+      } else {
+        s.vel.set(0, 0, 0);
+        s.angVel.set(0, 0, 0);
+      }
+    }
+    if (s.life < 0.4) s.mesh.material.opacity = s.life / 0.4;
   }
 }
 
@@ -163,9 +298,11 @@ const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
 const _muzzle = new THREE.Vector3();
 const _hitPoint = new THREE.Vector3();
+const _eject = new THREE.Vector3();
 
 function shoot(now) {
   if (ammo <= 0) {
+    audio.dryFire();
     startReload();
     return;
   }
@@ -173,6 +310,7 @@ function shoot(now) {
   score.shots += 1;
   const aiming = controls.state.aiming;
   gun.fire(aiming);
+  audio.shot();
 
   // 散布：在镜头方向上加一个随机锥形偏移
   const spread = gun.getSpread();
@@ -189,6 +327,8 @@ function shoot(now) {
   raycaster.set(camera.getWorldPosition(new THREE.Vector3()), _dir);
   const hits = raycaster.intersectObjects(allHitMeshes, false);
   gun.muzzleWorldPosition(_muzzle);
+  gun.ejectionWorldPosition(_eject);
+  spawnShell(_eject, _right, _dir);
 
   if (hits.length === 0) {
     const end = _dir.clone().multiplyScalar(45).add(camera.position);
@@ -227,6 +367,7 @@ function shoot(now) {
     hud.addLog(res.log, evalResult.zone === 'head' ? 'crit' : '');
     if (res.incapacitated) hud.toast('目标失能！');
     spawnImpact(_hitPoint, false);
+    audio.thud();
     return;
   }
 
@@ -236,6 +377,7 @@ function shoot(now) {
     hud.showHitmarker('纸靶');
     hud.addLog(res.log);
     spawnImpact(_hitPoint, false);
+    audio.thud();
     return;
   }
 
@@ -245,6 +387,7 @@ function shoot(now) {
     hud.showHitmarker('钢板');
     hud.addLog(res.log);
     spawnImpact(_hitPoint, true);
+    audio.tink();
     // 钢板是硬表面：小角度命中可能跳弹
     const ric = evaluateRicochet({ incidenceDeg, hardness: 1, roll: Math.random() });
     if (ric.ricochet) deflectTracer(_hitPoint, normal);
@@ -253,6 +396,8 @@ function shoot(now) {
 
   // 硬表面（墙/地面/掩体）：命中火花 + 可能跳弹
   spawnImpact(_hitPoint, true);
+  if (surface.hardness >= 0.8) audio.tink();
+  else audio.thud();
   const ric = evaluateRicochet({ incidenceDeg, hardness: surface.hardness, roll: Math.random() });
   if (ric.ricochet) {
     deflectTracer(_hitPoint, normal);
@@ -269,9 +414,18 @@ function deflectTracer(point, normal) {
 }
 
 // ---------- 换弹 / 模式 / 重置 ----------
+// 换弹分段咔哒声时机（与 gun.js 的弹匣/拉机柄动画对齐）
+const RELOAD_CLICK_STAGES = [
+  { at: 0.05, freq: 1500 }, // 退弹匣
+  { at: 0.55, freq: 900 }, // 新弹匣装回
+  { at: 0.86, freq: 1900 }, // 拉机柄
+];
+let reloadStage = 0;
+
 function startReload() {
   if (reloading || ammo === MAG_SIZE) return;
   reloading = true;
+  reloadStage = 0;
   reloadEnd = performance.now() / 1000 + RELOAD_TIME;
   gun.setReloading(true);
   hud.addLog('换弹中…');
@@ -300,6 +454,7 @@ controls.on('lockLost', () => {
 function startGame() {
   playing = true;
   startedAt = performance.now() / 1000;
+  audio.unlock(); // 用户手势中创建/恢复 AudioContext
   hud.hideStart();
   hud.hidePause();
   controls.requestPointerLock();
@@ -309,6 +464,7 @@ function startGame() {
 
 document.getElementById('btn-start').addEventListener('click', startGame);
 document.getElementById('btn-resume').addEventListener('click', () => {
+  audio.unlock();
   hud.hidePause();
   controls.requestPointerLock();
 });
@@ -345,7 +501,7 @@ function animate() {
     player.pitch -= look.dy * SENS;
     player.pitch = THREE.MathUtils.clamp(player.pitch, -1.45, 1.45);
 
-    // 移动
+    // 移动：速度向目标速度插值（加速 12/s，减速 10/s），不再瞬起瞬停
     const aiming = controls.state.aiming && !reloading;
     const speed = aiming ? 1.9 : controls.state.sprint ? 5.2 : 3.4;
     const sin = Math.sin(player.yaw);
@@ -355,16 +511,41 @@ function animate() {
     // 前进方向为 -Z 旋转 yaw
     const vx = mx * cos - my * sin;
     const vz = -my * cos - mx * sin;
-    player.pos.x = THREE.MathUtils.clamp(player.pos.x + vx * speed * dt, -BOUNDS.x, BOUNDS.x);
-    player.pos.z = THREE.MathUtils.clamp(player.pos.z + vz * speed * dt, BOUNDS.zMin, BOUNDS.zMax);
-    const moving = Math.hypot(mx, my) > 0.1;
-    if (moving) player.bobT += dt * (controls.state.sprint ? 11 : 8);
-    const bobY = moving ? Math.sin(player.bobT) * 0.014 : 0;
+    const hasInput = Math.hypot(mx, my) > 0.1;
+    const rate = hasInput ? 12 : 10;
+    const k = Math.min(1, rate * dt);
+    player.vel.x += (vx * speed - player.vel.x) * k;
+    player.vel.z += (vz * speed - player.vel.z) * k;
+    player.pos.x += player.vel.x * dt;
+    player.pos.z += player.vel.z * dt;
+    player.pos.x = THREE.MathUtils.clamp(player.pos.x, -BOUNDS.x, BOUNDS.x);
+    player.pos.z = THREE.MathUtils.clamp(player.pos.z, BOUNDS.zMin, BOUNDS.zMax);
+    resolveCollisions(player.pos);
+    player.pos.x = THREE.MathUtils.clamp(player.pos.x, -BOUNDS.x, BOUNDS.x);
+    player.pos.z = THREE.MathUtils.clamp(player.pos.z, BOUNDS.zMin, BOUNDS.zMax);
 
-    // 换弹
+    // 头部摆动：幅度随速度淡入淡出（停下不跳变），strafing 时轻微侧倾
+    const speedNow = Math.hypot(player.vel.x, player.vel.z);
+    const speedNorm = Math.min(1, speedNow / 3.4);
+    player.bobAmp += (0.02 * speedNorm - player.bobAmp) * Math.min(1, 6 * dt);
+    if (speedNorm > 0.05) player.bobT += dt * (5 + 5 * speedNorm);
+    const bobY = Math.sin(player.bobT) * player.bobAmp;
+    const bobX = Math.cos(player.bobT * 0.5) * player.bobAmp * 0.4;
+    const leanTarget = -mx * 0.012 * speedNorm;
+    player.lean += (leanTarget - player.lean) * Math.min(1, 8 * dt);
+
+    // 换弹：进度驱动枪身分段动画 + 分段咔哒声
     if (reloading) {
       const progress = 1 - (reloadEnd - now) / RELOAD_TIME;
-      hud.setReloading(true, Math.min(1, progress));
+      const p = Math.min(1, Math.max(0, progress));
+      hud.setReloading(true, p);
+      gun.setReloadProgress(p);
+      for (let i = 0; i < RELOAD_CLICK_STAGES.length; i++) {
+        if (p >= RELOAD_CLICK_STAGES[i].at && reloadStage < i + 1) {
+          reloadStage = i + 1;
+          audio.click(RELOAD_CLICK_STAGES[i].freq);
+        }
+      }
       if (now >= reloadEnd) {
         reloading = false;
         ammo = MAG_SIZE;
@@ -389,14 +570,16 @@ function animate() {
     }
     prevFiring = firing;
 
-    // 后坐力叠加到镜头
+    // 后坐力叠加到镜头（摆动横向分量沿镜头右侧方向）
     const recoil = gun.getRecoil();
-    camera.position.set(player.pos.x, player.pos.y + bobY, player.pos.z);
+    camera.position.set(player.pos.x + bobX * cos, player.pos.y + bobY, player.pos.z - bobX * sin);
     camera.rotation.y = player.yaw + recoil.yaw;
     camera.rotation.x = player.pitch + recoil.pitch;
+    camera.rotation.z = player.lean;
 
-    // 机瞄 FOV
-    const targetFov = aiming ? 55 : 75;
+    // 机瞄 FOV + 疾跑 FOV 小幅扩张
+    const sprinting = controls.state.sprint && my > 0.1 && speedNorm > 0.5;
+    const targetFov = aiming ? 55 : sprinting ? 80 : 75;
     if (Math.abs(camera.fov - targetFov) > 0.05) {
       camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 12);
       camera.updateProjectionMatrix();
@@ -417,6 +600,7 @@ function animate() {
     camera.position.set(0, EYE_HEIGHT, 8);
     camera.rotation.y = Math.sin(now * 0.08) * 0.15;
     camera.rotation.x = -0.02;
+    camera.rotation.z = 0;
     gun.update(dt, false);
   }
 

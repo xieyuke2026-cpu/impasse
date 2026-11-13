@@ -51,6 +51,8 @@ function easeOutCubic(t) {
 
 export function createTargets({ scene }) {
   const hitMeshes = [];
+  // 障碍物碰撞体（与 range.js 相同格式），由 main.js 做圆形推离。
+  const colliders = [];
   const papers = [];
   const steels = [];
   const dummies = [];
@@ -95,6 +97,7 @@ export function createTargets({ scene }) {
     scene.add(g);
     makePaper(g);
     makeStand(g);
+    colliders.push({ type: 'aabb', minX: x - 0.35, maxX: x + 0.35, minZ: -18.2, maxZ: -17.8 });
   }
 
   // ---------- 移动靶：轨道 + 滑架 ----------
@@ -132,6 +135,8 @@ export function createTargets({ scene }) {
     plate.userData.steel = steel;
     hitMeshes.push(plate);
     steels.push(steel);
+    // 立柱在 pivot 后方 z+0.25 处
+    colliders.push({ type: 'aabb', minX: x - 0.1, maxX: x + 0.1, minZ: z + 0.15, maxZ: z + 0.35 });
     return steel;
   }
   makeSteel(-2.8, -15);
@@ -177,6 +182,7 @@ export function createTargets({ scene }) {
     platform.position.set(0, 0.03, 0);
     group.add(platform);
     dummies.push(dummy);
+    colliders.push({ type: 'circle', x, z, r: 0.45 });
     return dummy;
   }
   makeDummy(2.8, -14);
@@ -326,6 +332,7 @@ export function createTargets({ scene }) {
 
   return {
     hitMeshes,
+    colliders,
     update,
     reset,
     applyPaperHit,

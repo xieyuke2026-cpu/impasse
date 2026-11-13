@@ -62,6 +62,8 @@ function signTexture() {
 
 export function createRange({ scene }) {
   const hitMeshes = [];
+  // 障碍物碰撞体：玩家圆形与之做推离。aabb = 轴对齐矩形，circle = 圆形。
+  const colliders = [];
 
   function solid(mesh, kind, hardness) {
     mesh.userData.surface = { kind, hardness };
@@ -151,6 +153,7 @@ export function createRange({ scene }) {
     const div = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.1, 5), dividerMat);
     div.position.set(x, 0.55, 6.5);
     scene.add(solid(div, 'prop', 0.6));
+    colliders.push({ type: 'aabb', minX: x - 0.07, maxX: x + 0.07, minZ: 4.0, maxZ: 9.0 });
   }
 
   // 掩体道具：木箱 + 油桶（硬表面，可跳弹）
@@ -162,12 +165,15 @@ export function createRange({ scene }) {
     crate.position.set(x, y, z);
     crate.rotation.y = (x + z) * 0.13;
     scene.add(solid(crate, 'prop', 0.6));
+    // 只有落地木箱挡人（半边 0.55 覆盖旋转后的角）；叠放的由下方木箱覆盖
+    if (y < 1) colliders.push({ type: 'aabb', minX: x - 0.55, maxX: x + 0.55, minZ: z - 0.55, maxZ: z + 0.55 });
   }
   for (const [x, z] of [[-5.8, -14], [5.8, -6]]) {
     const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 1.1, 18), barrelMat);
     barrel.position.set(x, 0.55, z);
     scene.add(solid(barrel, 'prop', 0.9));
+    colliders.push({ type: 'circle', x, z, r: 0.42 });
   }
 
-  return { hitMeshes };
+  return { hitMeshes, colliders };
 }
