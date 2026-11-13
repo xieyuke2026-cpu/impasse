@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>IMPASSE — 靶场 v0.1</title>
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="game-canvas"></canvas>
+
+<!-- 准星 -->
+<div id="crosshair">
+  <span class="ch-line ch-top"></span>
+  <span class="ch-line ch-right"></span>
+  <span class="ch-line ch-bottom"></span>
+  <span class="ch-line ch-left"></span>
+  <span class="ch-dot"></span>
+</div>
+
+<!-- 命中标记 -->
+<div id="hitmarker">
+  <span class="hm-bar hm-tl"></span>
+  <span class="hm-bar hm-tr"></span>
+  <span class="hm-bar hm-bl"></span>
+  <span class="hm-bar hm-br"></span>
+</div>
+<div id="hitmarker-label"></div>
+
+<!-- 左下：弹药与状态 -->
+<div id="hud-bl">
+  <div id="ammo"><span id="ammo-mag">30</span><span id="ammo-res">/ ∞</span></div>
+  <div id="gun-state"><span id="fire-mode">连发</span><span id="ads-state">腰射</span></div>
+  <div id="reload-wrap"><div id="reload-bar"></div><span>换弹中…</span></div>
+</div>
+
+<!-- 右上：计分与重置 -->
+<div id="hud-tr">
+  <div id="score-line">命中率 0%（0/0）· 用时 00:00</div>
+  <div id="zone-line">头 0 · 胸 0 · 腹 0 · 臂 0 · 腿 0</div>
+  <button id="btn-reset" type="button">重置靶子</button>
+</div>
+
+<!-- 右侧：毁伤日志 -->
+<div id="damage-log"></div>
+
+<!-- 中央提示 -->
+<div id="toast"></div>
+
+<!-- 触屏控制层 -->
+<div id="touch-ui">
+  <div id="joystick-zone"></div>
+  <div id="look-zone"></div>
+  <div id="joystick-base"><div id="joystick-knob"></div></div>
+  <button id="btn-fire" type="button" aria-label="开火"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/><rect x="8.6" y="15.5" width="6.8" height="1.6" fill="rgba(0,0,0,0.35)"/></svg></button>
+  <button id="btn-aim" type="button" aria-label="瞄准"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><line x1="12" y1="1.5" x2="12" y2="7"/><line x1="12" y1="17" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="7" y2="12"/><line x1="17" y1="12" x2="22.5" y2="12"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></button>
+  <button id="btn-reload" type="button" aria-label="换弹"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+  <button id="btn-mode" type="button" aria-label="射击模式" class="auto"><svg class="icon-auto" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><g transform="translate(-7.2,3) scale(0.7)"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></g><g transform="translate(0,3) scale(0.7)"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></g><g transform="translate(7.2,3) scale(0.7)"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></g></svg><svg class="icon-semi" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></svg></button>
+</div>
+
+<!-- 开始界面 -->
+<div id="start-overlay" class="overlay show">
+  <div class="panel">
+    <h1>IMPASSE <span class="ver">v0.1</span></h1>
+    <p class="sub">靶场模式 · 第一人称射击原型 · 无血条 · 模块化毁伤判定</p>
+    <div class="controls-desktop">
+      <p><b>WASD</b> 移动 · <b>鼠标</b> 瞄准 · <b>左键</b> 射击 · <b>右键</b> 机瞄</p>
+      <p><b>R</b> 换弹 · <b>V</b> 切换单发/连发 · <b>Shift</b> 疾跑 · <b>T</b> 重置靶子</p>
+    </div>
+    <div class="controls-touch">
+      <p><b>左半屏</b> 虚拟摇杆移动 · <b>右半屏滑动</b> 转动视角</p>
+      <p><b>开火键</b> 射击 · <b>瞄准键</b> 机瞄 · <b>换弹键</b> 换弹</p>
+    </div>
+    <p class="note">假人分头 / 胸 / 腹 / 手臂 / 腿部五个模块，命中按部位与入射角判定贯穿、擦伤或骨骼偏转；跳弹只发生在钢板、墙体等硬表面。</p>
+    <button id="btn-start" type="button">点击开始</button>
+  </div>
+</div>
+
+<!-- 暂停界面（桌面端指针锁定丢失时） -->
+<div id="pause-overlay" class="overlay">
+  <div class="panel">
+    <h1>已暂停</h1>
+    <p class="sub">指针锁定已解除</p>
+    <button id="btn-resume" type="button">点击继续</button>
+  </div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
