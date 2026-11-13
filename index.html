@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>IMPASSE — 靶场 v0.3</title>
-<link rel="stylesheet" href="css/style.css">
+<title>IMPASSE — 靶场 v0.4</title>
+<link rel="stylesheet" href="css/style.css?v=0.4">
 <script type="importmap">
 {
   "imports": {
@@ -15,6 +15,12 @@
 </head>
 <body>
 <canvas id="game-canvas"></canvas>
+
+<!-- 失血红屏（主循环按失血速率控制透明度） -->
+<div id="bleed-vignette"></div>
+
+<!-- 失血过多倒地黑场 -->
+<div id="collapse-fade"></div>
 
 <!-- 准星 -->
 <div id="crosshair">
@@ -38,7 +44,9 @@
 <div id="hud-bl">
   <div id="ammo"><span id="ammo-mag">30</span><span id="ammo-res">/ ∞</span></div>
   <div id="gun-state"><span id="fire-mode">连发</span><span id="ads-state">腰射</span></div>
+  <div id="bleed-indicator"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C12 2 5 10.2 5 15a7 7 0 0 0 14 0C19 10.2 12 2 12 2z"/></svg><span id="bleed-zones"></span></div>
   <div id="reload-wrap"><div id="reload-bar"></div><span>换弹中…</span></div>
+  <div id="bandage-wrap"><div id="bandage-bar"></div><span>包扎中…</span></div>
 </div>
 
 <!-- 右上：计分与重置 -->
@@ -64,6 +72,7 @@
   <button id="btn-reload" type="button" aria-label="换弹"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
   <button id="btn-mode" type="button" aria-label="射击模式" class="auto"><svg class="icon-auto" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><g transform="translate(-7.2,3) scale(0.7)"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></g><g transform="translate(0,3) scale(0.7)"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></g><g transform="translate(7.2,3) scale(0.7)"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></g></svg><svg class="icon-semi" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></svg></button>
   <button id="btn-jump" type="button" aria-label="跳跃"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="20" x2="12" y2="5"/><polyline points="5 11 12 4 19 11"/></svg></button>
+  <button id="btn-bandage" type="button" aria-label="包扎"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10 3h4v7h7v4h-7v7h-4v-7H3v-4h7z"/></svg></button>
 </div>
 
 <!-- 布局编辑条（仅编辑布局时显示） -->
@@ -76,17 +85,17 @@
 <!-- 开始界面 -->
 <div id="start-overlay" class="overlay show">
   <div class="panel">
-    <h1>IMPASSE <span class="ver">v0.3</span></h1>
+    <h1>IMPASSE <span class="ver">v0.4</span></h1>
     <p class="sub">靶场模式 · 第一人称射击原型 · 无血条 · 模块化毁伤判定</p>
     <div class="controls-desktop">
       <p><b>WASD</b> 移动 · <b>鼠标</b> 瞄准 · <b>左键</b> 射击 · <b>右键</b> 机瞄</p>
-      <p><b>R</b> 换弹 · <b>V</b> 切换单发/连发 · <b>Shift</b> 疾跑 · <b>空格</b> 跳跃 · <b>T</b> 重置靶子</p>
+      <p><b>R</b> 换弹 · <b>V</b> 切换单发/连发 · <b>Shift</b> 疾跑 · <b>空格</b> 跳跃 · <b>B</b> 包扎 · <b>T</b> 重置靶子</p>
     </div>
     <div class="controls-touch">
       <p><b>左半屏</b> 虚拟摇杆移动 · <b>右半屏滑动</b> 转动视角</p>
-      <p><b>开火键</b> 射击 · <b>瞄准键</b> 机瞄 · <b>换弹键</b> 换弹 · <b>跳跃键</b> 跳跃</p>
+      <p><b>开火键</b> 射击 · <b>瞄准键</b> 机瞄 · <b>换弹键</b> 换弹 · <b>跳跃键</b> 跳跃 · <b>包扎键</b> 包扎</p>
     </div>
-    <p class="note">假人分头 / 胸 / 腹 / 手臂 / 腿部五个模块，命中按部位与入射角判定贯穿、擦伤或骨骼偏转；跳弹只发生在钢板、墙体等硬表面。</p>
+    <p class="note">假人分头 / 胸 / 腹 / 手臂 / 腿部五个模块，命中按部位与入射角判定贯穿、擦伤或骨骼偏转；跳弹只发生在钢板、墙体等硬表面。命中可能触发失血，持续加重模块毁伤；玩家受伤后也会失血（红屏、晃动、减速），按住包扎键止血，失血过多会倒地重生。</p>
     <button id="btn-start" type="button">点击开始</button>
     <button id="btn-settings-start" type="button" class="btn-ghost"><svg class="gear-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置</button>
   </div>
@@ -107,6 +116,6 @@
   <div class="panel settings-panel" id="settings-panel"></div>
 </div>
 
-<script type="module" src="js/main.js"></script>
+<script type="module" src="js/main.js?v=0.4"></script>
 </body>
 </html>

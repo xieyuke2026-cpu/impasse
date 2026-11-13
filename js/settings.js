@@ -13,6 +13,7 @@ export const DEFAULT_KEYS = {
   reload: 'KeyR',
   fireMode: 'KeyV',
   reset: 'KeyT',
+  bandage: 'KeyB',
 };
 
 export const KEY_ACTIONS = [
@@ -25,6 +26,7 @@ export const KEY_ACTIONS = [
   { id: 'reload', label: '换弹' },
   { id: 'fireMode', label: '切换单发/连发' },
   { id: 'reset', label: '重置靶子' },
+  { id: 'bandage', label: '包扎（按住）' },
 ];
 
 const DEFAULTS = {
@@ -43,6 +45,7 @@ const LAYOUT_BUTTONS = [
   { id: 'reload', el: 'btn-reload' },
   { id: 'mode', el: 'btn-mode' },
   { id: 'jump', el: 'btn-jump' },
+  { id: 'bandage', el: 'btn-bandage' },
 ];
 
 function clamp(v, min, max) { return Math.min(max, Math.max(min, v)); }
@@ -97,18 +100,17 @@ function sanitize(saved) {
     }
   }
   if (saved.layout && typeof saved.layout === 'object') {
+    // 容忍旧版本存下的不完整布局（例如 v0.3 没有包扎键）：有效的条目保留，
+    // 缺失的按钮回落 CSS 默认位置，而不是整个布局作废。
     const layout = {};
-    let ok = true;
     for (const b of LAYOUT_BUTTONS) {
       const p = saved.layout[b.id];
-      if (!p || typeof p.x !== 'number' || typeof p.y !== 'number' ||
-          !Number.isFinite(p.x) || !Number.isFinite(p.y)) {
-        ok = false;
-        break;
+      if (p && typeof p.x === 'number' && typeof p.y === 'number' &&
+          Number.isFinite(p.x) && Number.isFinite(p.y)) {
+        layout[b.id] = { x: clamp(p.x, 0, 100), y: clamp(p.y, 0, 100) };
       }
-      layout[b.id] = { x: clamp(p.x, 0, 100), y: clamp(p.y, 0, 100) };
     }
-    if (ok) s.layout = layout;
+    if (Object.keys(layout).length > 0) s.layout = layout;
   }
   return s;
 }
@@ -176,7 +178,7 @@ export function createSettingsStore() {
   return store;
 }
 
-export function initSettingsPanel({ store, controls }) {
+export function initSettingsPanel({ store, controls, onSimulateHit }) {
   const overlay = document.getElementById('settings-overlay');
   const panel = document.getElementById('settings-panel');
   if (!overlay || !panel) return;
@@ -218,6 +220,14 @@ export function initSettingsPanel({ store, controls }) {
       <h3>键盘</h3>
       <div id="set-keys"></div>
       <p class="settings-hint">点击键位后按下新按键；如该键已被占用，两者互换。Esc 取消。</p>
+    </div>
+    <div class="settings-section">
+      <h3>测试</h3>
+      <div class="setting-row">
+        <label>模拟受伤</label>
+        <button type="button" class="key-bind" id="set-sim-hit">模拟受伤</button>
+      </div>
+      <p class="settings-hint">测试用：模拟一次敌人命中，触发玩家失血流程（红屏、晃动、减速、包扎、失血过多倒地）。正式的敌人伤害以后会接同一个接口。</p>
     </div>
     <div class="settings-actions">
       <button type="button" id="set-close">完成</button>
@@ -457,6 +467,13 @@ export function initSettingsPanel({ store, controls }) {
     if (e.currentTarget.blur) e.currentTarget.blur();
     startLayoutEdit();
   });
+  const simHitBtn = panel.querySelector('#set-sim-hit');
+  if (simHitBtn) {
+    simHitBtn.addEventListener('click', () => {
+      if (onSimulateHit) onSimulateHit();
+      simHitBtn.blur();
+    });
+  }
   panel.querySelector('#set-close').addEventListener('click', () => close());
 
   const btnSettingsStart = document.getElementById('btn-settings-start');

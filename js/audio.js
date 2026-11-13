@@ -117,5 +117,12 @@ export function createAudio() {
     tone({ freq: 70, freqEnd: 45, dur: 0.09, type: 'sine', gain: 0.3 });
   }
 
-  return { unlock, shot, click, dryFire, tink, thud, land };
+  // 包扎完成：两声轻柔的上行音
+  function heal() {
+    if (!ensure()) return;
+    tone({ freq: 520, dur: 0.1, type: 'sine', gain: 0.3 });
+    setTimeout(() => tone({ freq: 780, dur: 0.14, type: 'sine', gain: 0.3 }), 90);
+  }
+
+  return { unlock, shot, click, dryFire, tink, thud, land, heal };
 }

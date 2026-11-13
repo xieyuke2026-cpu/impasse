@@ -131,6 +131,57 @@ html, body {
   transition: width 0.1s linear;
 }
 
+/* 失血指示：水滴图标 + 部位（平时隐藏） */
+#bleed-indicator {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: bold;
+  color: #ff6b5e;
+}
+#bleed-indicator.show { display: flex; }
+#bleed-indicator svg { width: 16px; height: 16px; }
+
+/* 包扎进度条（与换弹条同款式，绿色） */
+#bandage-wrap {
+  display: none;
+  margin-top: 8px;
+  width: 170px;
+  font-size: 13px;
+  color: #8fe388;
+}
+#bandage-wrap.show { display: block; }
+#bandage-bar {
+  height: 5px;
+  background: #8fe388;
+  border-radius: 3px;
+  margin-bottom: 4px;
+  transition: width 0.1s linear;
+}
+
+/* 失血红屏：边缘暗红渐变，透明度由主循环控制 */
+#bleed-vignette {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 52%, rgba(160, 10, 10, 0.55) 100%);
+  opacity: 0;
+}
+
+/* 失血过多倒地：全屏黑场 */
+#collapse-fade {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  background: #000;
+  opacity: 0;
+  transition: opacity 0.8s ease;
+}
+
 #hud-tr {
   position: fixed;
   right: 20px;
@@ -271,6 +322,7 @@ body.touch #hud-bl { left: 20px; bottom: 170px; }
 #btn-reload { right: calc(40px * var(--btn-scale, 1)); bottom: calc(146px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); }
 #btn-mode { right: calc(134px * var(--btn-scale, 1)); bottom: calc(140px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); }
 #btn-jump { right: calc(40px * var(--btn-scale, 1)); bottom: calc(250px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); }
+#btn-bandage { right: calc(134px * var(--btn-scale, 1)); bottom: calc(250px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); border-color: rgba(143, 227, 136, 0.7); }
 
 /* 摇杆在右：摇杆区/视角区与按钮组整体镜像，弹药 HUD 让到右侧 */
 body.joystick-right #joystick-zone { left: auto; right: 0; }
@@ -281,6 +333,7 @@ body.joystick-right #btn-aim { right: auto; left: calc(134px * var(--btn-scale, 
 body.joystick-right #btn-reload { right: auto; left: calc(40px * var(--btn-scale, 1)); }
 body.joystick-right #btn-mode { right: auto; left: calc(134px * var(--btn-scale, 1)); }
 body.joystick-right #btn-jump { right: auto; left: calc(40px * var(--btn-scale, 1)); }
+body.joystick-right #btn-bandage { right: auto; left: calc(134px * var(--btn-scale, 1)); }
 
 /* 布局编辑：强制显示触屏按钮（桌面端也能调），按钮可拖拽 */
 body.layout-edit #touch-ui { display: block; }

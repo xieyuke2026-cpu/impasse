@@ -19,6 +19,12 @@ export function createHud() {
   const startOverlay = el('start-overlay');
   const pauseOverlay = el('pause-overlay');
   const btnMode = el('btn-mode');
+  const bleedIndicator = el('bleed-indicator');
+  const bleedZones = el('bleed-zones');
+  const bandageWrap = el('bandage-wrap');
+  const bandageBar = el('bandage-bar');
+  const bleedVignette = el('bleed-vignette');
+  const collapseFade = el('collapse-fade');
 
   let hitTimer = null;
   let toastTimer = null;
@@ -44,6 +50,29 @@ export function createHud() {
   function setReloading(active, progress = 0) {
     reloadWrap.classList.toggle('show', active);
     reloadBar.style.width = `${Math.round(progress * 100)}%`;
+  }
+
+  // 失血指示：水滴图标 + 正在失血的部位（没有数值条，严重程度看红屏）。
+  function setBleeding(zoneLabels) {
+    const active = Array.isArray(zoneLabels) && zoneLabels.length > 0;
+    bleedIndicator.classList.toggle('show', active);
+    if (active) bleedZones.textContent = `失血：${zoneLabels.join('、')}`;
+  }
+
+  // 包扎进度条（与换弹条同款式，绿色）。
+  function setBandaging(active, progress = 0) {
+    bandageWrap.classList.toggle('show', active);
+    bandageBar.style.width = `${Math.round(progress * 100)}%`;
+  }
+
+  // 失血红屏：opacity 由主循环按失血速率 + 脉冲计算。
+  function setBleedVignette(opacity) {
+    bleedVignette.style.opacity = String(opacity);
+  }
+
+  // 失血过多倒地：全屏黑场过渡。
+  function setCollapseFade(opacity) {
+    collapseFade.style.opacity = String(opacity);
   }
 
   // 准星散布：bloomPx 越大，四条线离中心越远。
@@ -99,6 +128,10 @@ export function createHud() {
     setFireMode,
     setAds,
     setReloading,
+    setBleeding,
+    setBandaging,
+    setBleedVignette,
+    setCollapseFade,
     setCrosshair,
     showHitmarker,
     addLog,

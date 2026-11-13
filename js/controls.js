@@ -2,7 +2,7 @@
 // 触屏是第一公民：iPad 上只用触摸就能完成全部操作。
 // 键位、触屏灵敏度、机瞄方式等来自 settings.js，可由玩家自定义。
 
-import { DEFAULT_KEYS } from './settings.js';
+import { DEFAULT_KEYS } from './settings.js?v=0.4';
 
 export function createControls({ canvas, elements, settings }) {
   const isTouch =
@@ -15,6 +15,7 @@ export function createControls({ canvas, elements, settings }) {
     firing: false,
     aiming: false,
     sprint: false,
+    bandaging: false, // 包扎键/按钮按住中（主循环据此推进包扎进度）
     pointerLocked: false,
     touchMode: isTouch,
   };
@@ -39,7 +40,7 @@ export function createControls({ canvas, elements, settings }) {
   function arrowFree(code) {
     const k = boundKeys();
     return k.jump !== code && k.reload !== code && k.fireMode !== code &&
-      k.reset !== code && k.sprint !== code;
+      k.reset !== code && k.sprint !== code && k.bandage !== code;
   }
   window.addEventListener('keydown', (e) => {
     if (e.repeat) return;
@@ -58,8 +59,10 @@ export function createControls({ canvas, elements, settings }) {
   window.addEventListener('keyup', (e) => keys.delete(e.code));
   window.addEventListener('blur', () => {
     keys.clear();
+    touchBandaging = false;
     state.firing = false;
     state.aiming = false;
+    state.bandaging = false;
   });
 
   // ---------- 鼠标（Pointer Lock） ----------
@@ -301,6 +304,12 @@ export function createControls({ canvas, elements, settings }) {
   bindTap(elements.btnReset, () => emit('reset'));
   bindTap(elements.btnJump, () => emit('jump'));
 
+  // 包扎：按住型（键盘 B 键或触屏包扎键），主循环按住满 2.5s 即止血。
+  let touchBandaging = false;
+  bindHold(elements.btnBandage,
+    () => { touchBandaging = true; },
+    () => { touchBandaging = false; });
+
   function setAimActive(active) {
     state.aiming = active;
     if (elements.btnAim) elements.btnAim.classList.toggle('toggled', active);
@@ -312,6 +321,7 @@ export function createControls({ canvas, elements, settings }) {
       state.moveX = 0;
       state.moveY = 0;
       state.sprint = false;
+      state.bandaging = false;
       return;
     }
     const k = boundKeys();
@@ -336,6 +346,8 @@ export function createControls({ canvas, elements, settings }) {
     state.sprint = keys.has(k.sprint) ||
       ((k.sprint === 'ShiftLeft' || k.sprint === 'ShiftRight') &&
         (keys.has('ShiftLeft') || keys.has('ShiftRight')));
+    // 包扎：键盘绑定键按住，或触屏包扎键按住。
+    state.bandaging = keys.has(k.bandage) || touchBandaging;
   }
 
   function consumeLook() {
@@ -354,7 +366,9 @@ export function createControls({ canvas, elements, settings }) {
     suspended = v;
     if (v) {
       keys.clear();
+      touchBandaging = false;
       state.firing = false;
+      state.bandaging = false;
       setAimActive(false);
     }
   }
