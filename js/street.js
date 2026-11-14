@@ -151,6 +151,37 @@ export function createStreet({ scene, assets, soldierModel }) {
   ground.receiveShadow = true;
   group.add(solid(ground, { kind: 'floor', hardness: 0.9 }));
 
+  // ---------- 外围地面裙边（v0.11） ----------
+  // 94m 主地面在 ±47 处截断，天际线环却在地面之外：站在图边向外看，
+  // 地平线以下全是天空，楼浮在空中（v0.10 反馈 p1/p2）。裙边是一块
+  // 500×500 的地面，铺在主地面下方 5cm，一直延伸到雾里，
+  // 地平线再无硬切边，天际线全部托底。裙边复用沥青 PBR（贴图克隆，
+  // repeat 按主地面 94m/23 块的密度换算，接缝处纹理相位对齐），
+  // 贴图失败时退回素色。
+  let skirtMat;
+  if (textures.asphalt && textures.asphalt.map) {
+    const cloneTex = (t) => {
+      if (!t) return null;
+      const c = t.clone();
+      c.needsUpdate = true;
+      c.repeat.set((500 * 23) / 94, (500 * 23) / 94);
+      return c;
+    };
+    skirtMat = new THREE.MeshStandardMaterial({
+      map: cloneTex(textures.asphalt.map),
+      normalMap: cloneTex(textures.asphalt.normalMap),
+      roughnessMap: cloneTex(textures.asphalt.roughnessMap),
+      roughness: 1.0,
+      metalness: 0,
+    });
+  } else {
+    skirtMat = new THREE.MeshStandardMaterial({ color: 0x55585c, roughness: 1, metalness: 0 });
+  }
+  const skirt = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), skirtMat);
+  skirt.rotation.x = -Math.PI / 2;
+  skirt.position.y = -0.05;
+  group.add(solid(skirt, { kind: 'floor', hardness: 0.9 }));
+
   // ---------- 街区地面板（人行道/广场）：顶面高出地面 2cm，无碰撞体 ----------
   // 地面高度只降不升的规则（见 main.js）：带碰撞体的凸起会让玩家“走不上去”，
   // 所以 2cm 的薄板不设碰撞体，视觉上是抬高的人行道，脚下仍是平地。
@@ -282,11 +313,26 @@ export function createStreet({ scene, assets, soldierModel }) {
   placeModel('container-c', 35, -32, Math.PI / 2, 7, { surface: SURFACES.metal });
 
   // ---------- 天际线环（界外装饰，无碰撞体，不投射阴影） ----------
+  // v0.11：环从 ±52 推到 ±68（站在图边也不贴脸）；low-* 薄板塔全部撤下——
+  // 它们又薄又暗、背光面近黑，在地面之外看就是“浮空黑碑”（v0.10 反馈 p2 的
+  // low-c；p1 浮空叠层塔是 low-b）。改用 bld/house/sky 混搭、不同朝向，
+  // 读作远处的街区；裙边托底，绝不浮空。
   const SKYLINE = [
-    ['sky-a', 0, -52, 0, 8], ['sky-c', 26, -52, 0, 8], ['sky-e', -26, -52, 0, 8],
-    ['sky-a', 52, 0, 0, 8], ['sky-c', 52, 26, 0, 8], ['low-wide-b', 52, -26, 0, 8],
-    ['low-a', -52, 0, 0, 8], ['low-b', -52, -26, 0, 8], ['sky-e', -52, 26, 0, 8],
-    ['low-c', 0, 52, 0, 8], ['low-d', 26, 52, 0, 8], ['low-wide-a', -26, 52, Math.PI / 2, 8],
+    // 北侧（z=-68）：主街尽头放玻璃幕墙塔收束视线
+    ['sky-a', 0, -68, 0, 8], ['sky-c', -26, -68, 0, 8], ['sky-e', 26, -68, 0, 8],
+    ['bld-a', -48, -68, 0, 8], ['bld-d', 48, -68, Math.PI / 2, 8],
+    // 南侧（z=+68）
+    ['sky-c', 0, 68, Math.PI, 8], ['bld-b', -26, 68, 0, 8], ['bld-f', 26, 68, 0, 8],
+    ['house-f', -48, 68, Math.PI / 2, 8], ['house-m', 48, 68, 0, 8],
+    // 东侧（x=+68）
+    ['sky-e', 68, 0, Math.PI / 2, 8], ['bld-c', 68, -26, Math.PI / 2, 8],
+    ['house-a', 68, 26, Math.PI / 2, 8], ['ind-c', 68, 48, 0, 6],
+    // 西侧（x=-68）
+    ['sky-a', -68, 0, -Math.PI / 2, 8], ['bld-e', -68, -26, 0, 8],
+    ['house-r', -68, 26, Math.PI / 2, 8], ['bld-b', -68, 48, Math.PI, 8],
+    // 四角（斜向看出去不再是空地）
+    ['bld-c', -56, -56, Math.PI / 4, 8], ['house-m', 56, -56, -Math.PI / 4, 8],
+    ['bld-e', -56, 56, -Math.PI / 4, 8], ['house-a', 56, 56, Math.PI / 4, 8],
     ['chimney', 48, -37, 0, 6],
   ];
   for (const [key, x, z, rotY, scale] of SKYLINE) {
@@ -332,7 +378,7 @@ export function createStreet({ scene, assets, soldierModel }) {
   const TREES = [
     ['tree-large', -16, -16], ['tree-small', -10, -10], ['tree-large', 16, 16], ['tree-small', 10, 10],
     ['tree-large', 7, -6], ['tree-small', 41, -19], ['tree-small', -32, 19],
-    ['tree-large', -32, 42], ['tree-small', -41, -41], ['tree-large', -8, -42], ['tree-small', -18, 42],
+    ['tree-large', -28, 42], ['tree-small', -41, -41], ['tree-large', -8, -33], ['tree-small', -18, 33],
   ];
   for (const [key, x, z] of TREES) {
     placeModel(key, x, z, 0, 8, { collider: 'circle', r: 0.25, surface: SURFACES.foliage });
@@ -341,7 +387,7 @@ export function createStreet({ scene, assets, soldierModel }) {
   for (const [x, z, rotY] of FENCES) placeModel('fence', x, z, rotY, 6, { surface: SURFACES.wood });
 
   // ---------- 街头道具：垃圾箱 / 路障 / 交通锥 ----------
-  const DUMPSTERS = [[-5, -10, 0], [5, 16, Math.PI / 2], [-33, -33, 0], [33, 33, Math.PI / 2]];
+  const DUMPSTERS = [[-5, -10, 0], [5, 16, Math.PI / 2], [-32, -32, 0], [25, 30, Math.PI / 2]];
   for (const [x, z, rotY] of DUMPSTERS) {
     placeModel('dumpster', x, z, rotY, 5.5, { surface: SURFACES.metal }); // 顶面 1.15m，可跳
   }
@@ -353,9 +399,11 @@ export function createStreet({ scene, assets, soldierModel }) {
   for (const [x, z] of CONES) {
     placeModel('cone', x, z, 0, 8, { collider: 'circle', r: 0.15, surface: SURFACES.plastic });
   }
-  // 雨篷：贴在两栋临街建筑的南立面上（无碰撞体，2.4m 高，头顶上方）。
-  placeModel('awning', -37, -32.8, 0, 8, { y: 2.4, collider: false });
-  placeModel('awning', 37, -8.8, 0, 8, { y: 2.4, collider: false });
+  // 雨篷：Kenney awning 模型自带落地支柱（原点在支柱脚下、篷体在原点
+  // 前方 0.8–2.0m），必须 y=0 落地、原点贴墙；v0.10 的 y=2.4 让支柱悬在
+  // 半空、篷体离墙 1.2m（实测截图）。原点 z = 墙面 z − 0.8，篷体后沿贴墙。
+  placeModel('awning', -37, -34.0, 0, 8, { collider: false });
+  placeModel('awning', 37, -9.4, 0, 8, { collider: false });
 
   // ---------- 程序化掩体（木箱 / 路障 / 沙袋）：街区里的可跳掩体 ----------
   const crateMat = new THREE.MeshStandardMaterial({ color: 0x7d6242, roughness: 0.9 });
@@ -376,11 +424,65 @@ export function createStreet({ scene, assets, soldierModel }) {
   for (const [x, z] of [[2, 30], [-2, -24], [24, -12], [-24, 12]]) {
     coverBox(1, 1, 1, x, z, 0.2, crateMat, SURFACES.wood);
   }
-  for (const [x, z] of [[4, -20], [-4, 8], [20, 26], [-20, -26]]) {
+  for (const [x, z] of [[2.5, -24], [-4, 8], [20, 26], [-20, -26]]) {
     coverBox(1.8, 0.9, 0.4, x, z, 0, barrierMat, SURFACES.plastic);
   }
   for (const [x, z] of [[-2, 36], [2, 36], [-28, 0], [28, 0]]) {
     coverBox(2.2, 0.8, 0.6, x, z, 0, sandMat, SURFACES.concrete);
+  }
+
+  // ---------- v0.11 密度补充：地图太空旷，沿街边/路口/广场补道具 ----------
+  // 只用仓库已有的模型（零新素材）；全部靠边、不堵主街中央视线与靶位
+  // （靶位见 targets.js STREET_LAYOUT，新增点位已逐一核对距离）。
+  // 点位另经碰撞体全量核对：道具不得压进建筑/房间/其他道具的碰撞盒——
+  // 首版有 8 个密度点位压进实体（箱子进了 house-a/bld-e/house-r、沙袋进了
+  // house-r 与 R1 墙、货车压路障、轿车压进 bld-e、锥桶压集装箱），已全部
+  // 移出；另有 6 个 v0.10 点位原本就藏在实体里（3 棵树在房间/厂房内、
+  // 2 个垃圾箱压进楼角、1 个路障半埋进墙），也一并移出（TREES/DUMPSTERS/
+  // coverBox 见上）。核对脚本见 /tmp/impasse-v11-tools/check_overlaps.py
+  //（126 个道具、0 重叠），下次加道具先跑它。
+  const CARS2 = [
+    ['car-van', 2.0, -20, 0, 1.3, 1.2, 1.7],
+    ['car-sedan', -1.2, 16.5, Math.PI, 1.2, 1.1, 1.8],
+    ['car-suv', 24.5, -3.2, Math.PI / 2, 1.2, 1.1, 1.8],
+    ['car-taxi', -23.5, 2.6, -Math.PI / 2, 1.2, 1.1, 1.8],
+    ['car-truck', 29.2, 20, Math.PI / 2, 1.3, 1.2, 1.7],
+    ['car-sedan', -29.2, -20, -Math.PI / 2, 1.2, 1.1, 1.8],
+  ];
+  for (const [key, x, z, rotY, sx, sy, sz] of CARS2) {
+    placeModel(key, x, z, rotY, 1, { sx, sy, sz, surface: SURFACES.metal });
+  }
+  for (const [x, z] of [[6, -11], [-6, 11.5], [30, -8], [-30, 8], [10, 29.5], [-10, -30]]) {
+    coverBox(1, 1, 1, x, z, 0.2, crateMat, SURFACES.wood);
+  }
+  for (const [x, z] of [[8, 26], [-8, -26], [26, 14], [-30, -14]]) {
+    coverBox(1.8, 0.9, 0.4, x, z, 0, barrierMat, SURFACES.plastic);
+  }
+  for (const [x, z] of [[6, 39.5], [-4.5, -38], [38, -6], [-38, 6]]) {
+    coverBox(2.2, 0.8, 0.6, x, z, 0, sandMat, SURFACES.concrete);
+  }
+  const TREES2 = [
+    ['tree-large', 22, -22], ['tree-large', -22, 22], ['tree-large', 22, 22], ['tree-large', -22, -22],
+    ['tree-small', 4.5, -34], ['tree-small', -4.5, 34],
+  ];
+  for (const [key, x, z] of TREES2) {
+    placeModel(key, x, z, 0, 8, { collider: 'circle', r: 0.25, surface: SURFACES.foliage });
+  }
+  for (const [x, z] of [[-20, -6], [-6, -20], [6, 20], [20, 6]]) placeModel('planter', x, z, 0, 5);
+  for (const [key, x, z] of [['lamp-curved', 22, 30], ['lamp-square', 30, 22], ['lamp-curved', -22, -30], ['lamp-square', -30, -22]]) {
+    placeModel(key, x, z, 0, 8, { collider: 'circle', r: 0.3, surface: SURFACES.metal });
+  }
+  for (const [x, z] of [[-21, -16], [-21, -10], [21, 10], [21, 16]]) {
+    placeModel('fence', x, z, Math.PI / 2, 6, { surface: SURFACES.wood });
+  }
+  for (const [x, z] of [[30, -30], [32, -30], [30, -32], [31, -32]]) {
+    placeModel('cone', x, z, 0, 8, { collider: 'circle', r: 0.15, surface: SURFACES.plastic });
+  }
+  for (const [x, z, rotY] of [[-20, 14, 0], [20, -14, Math.PI / 2]]) {
+    placeModel('dumpster', x, z, rotY, 5.5, { surface: SURFACES.metal });
+  }
+  for (const [x, z, rotY] of [[4, -30, 0], [-4, 30, 0]]) {
+    placeModel('road-barrier', x, z, rotY, 8, { surface: SURFACES.plastic });
   }
 
   // ---------- 可进入的房间：砖墙 + 门洞 + 窗洞 + 天花板 + 暖光 ----------
@@ -483,7 +585,7 @@ export function createStreet({ scene, assets, soldierModel }) {
     bounds: { x: 43, zMin: -43, zMax: 43 },
     env: {
       background: new THREE.Color(0x8fb3d9),
-      fog: new THREE.Fog(0x8fb3d9, 55, 140),
+      fog: new THREE.Fog(0x8fb3d9, 50, 135), // v0.11：略加密，远处天际线融进雾里
       exposure: 1.0, // 室外 + HDRI 环境光，曝光略低于靶场的 1.05
     },
     menuCam: { x: 0, z: 40, yawBase: 0, yawAmp: 0.2, pitch: -0.02 },

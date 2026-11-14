@@ -1,23 +1,23 @@
-// IMPASSE v0.10 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
+// IMPASSE v0.11 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
 // 渲染：Three.js（CDN）；输入：Pointer Lock + 触屏；毁伤：damage.js 纯函数；
 // 失血：bleeding.js 纯函数（假人 + 玩家）；记录：records.js 纯函数 + localStorage。
 // 两张地图（靶场 + 城市街区）同场建造、按组切换可见性；记录两张图共用。
 // 素材（GLB/PBR/HDRI）由 assets.js 加载，加载完成（或超时回退）后才建造
 // 地图与枪；任何一件素材失败都走程序化/纯色回退，游戏不受影响。
-// 缓存策略：全部本地模块带 ?v=0.10 查询串，版本升级即换地址，避免新旧文件混版。
+// 缓存策略：全部本地模块带 ?v=0.11 查询串，版本升级即换地址，避免新旧文件混版。
 
 import * as THREE from 'three';
-import { createControls } from './controls.js?v=0.10';
-import { createGun } from './gun.js?v=0.10';
-import { createTargets, RANGE_LAYOUT, STREET_LAYOUT } from './targets.js?v=0.10';
-import { createRange } from './range.js?v=0.10';
-import { createStreet } from './street.js?v=0.10';
-import { createHud } from './hud.js?v=0.10';
-import { createAudio } from './audio.js?v=0.10';
-import { createSettingsStore, initSettingsPanel, KEY_ACTIONS, keyLabel } from './settings.js?v=0.10';
-import { createRecordsStore } from './records.js?v=0.10';
-import { loadAssets } from './assets.js?v=0.10';
-import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.10';
+import { createControls } from './controls.js?v=0.11';
+import { createGun } from './gun.js?v=0.11';
+import { createTargets, RANGE_LAYOUT, STREET_LAYOUT } from './targets.js?v=0.11';
+import { createRange } from './range.js?v=0.11';
+import { createStreet } from './street.js?v=0.11';
+import { createHud } from './hud.js?v=0.11';
+import { createAudio } from './audio.js?v=0.11';
+import { createSettingsStore, initSettingsPanel, KEY_ACTIONS, keyLabel } from './settings.js?v=0.11';
+import { createRecordsStore } from './records.js?v=0.11';
+import { loadAssets } from './assets.js?v=0.11';
+import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.11';
 import {
   createBleedState,
   rollBleed,
@@ -32,11 +32,11 @@ import {
   bleedSpeedFactor,
   bleedVignetteOpacity,
   bleedSwayAmplitude,
-} from './bleeding.js?v=0.10';
+} from './bleeding.js?v=0.11';
 
 // 唯一版本号：由脚本写进主页的版本标签，显示的版本即脚本版本，
 // 旧脚本缓存不会谎报新版本（HTML 里的 v0.9 只是加载前的占位文案）。
-const VERSION = '0.10';
+const VERSION = '0.11';
 
 const MAG_SIZE = 30;
 const RELOAD_TIME = 1.8;

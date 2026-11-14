@@ -10,7 +10,7 @@
 // 传输格式：采样以 base64 文本（.b64）存在仓库里（推送工具拒二进制），
 // 这里复用 assets.js 的 fetchAssetBytes() 取回原始字节再解码。
 
-import { fetchAssetBytes } from './assets.js?v=0.10';
+import { fetchAssetBytes } from './assets.js?v=0.11';
 
 const SAMPLE_FILES = {
   shotNear: 'shot-ar15-near.m4a',

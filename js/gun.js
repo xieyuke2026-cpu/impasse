@@ -10,17 +10,22 @@
 //      枪身下沉/上翻 + 左手下探（姿态逻辑共用，子件动画跳过）。
 // 两种路径共用：枪组位姿/后坐力/双手/绷带/枪口火光/抛壳锚点。
 //
-// 瞄准线约定：瞄准线在枪身局部坐标 y = 0.06 处；ADS_POS 把枪身放到
-// (0, -0.06, -0.50)，机瞄时镜头正好沿瞄准线看出去。GLB 路径下步枪的
-// 导轨顶沿被对齐到同一高度，所以 ADS_POS 两条路径共用。
+// 瞄准线约定（程序化路径）：瞄准线在枪身局部坐标 y = 0.06 处；ADS_POS 把枪身
+// 放到 (0, -0.06, -0.50)，机瞄时镜头正好沿瞄准线看出去。
+// GLB 步枪路径另有更高的瞄准线：枪口装置顶部实测高出 0.06 的线 0.044
+// （几何截面探针），且枪身俯角让导轨前高后低——0.06 的线会穿过枪身，
+// 机瞄时枪身挡住画面中央（v0.10 反馈 p3）。步枪用 RIFLE_SIGHT_Y = 0.112
+// （枪口顶 0.104 上方留 0.008），环与准星都立在这条线上，枪身整体低于视线。
 // ADS z 取 -0.50（而非 -0.38）：枪托顶面不再越过近裁剪面，机瞄时枪身只占画面
-// 下方中央一条，不会铺满整个下半屏。
+// 下方中央一条，不会铺满整个下半屏。步枪 ADS z 再推远到 -0.55，枪托角尺寸更小。
 
 import * as THREE from 'three';
 
 const HIP_POS = new THREE.Vector3(0.26, -0.22, -0.45);
 const ADS_POS = new THREE.Vector3(0, -0.06, -0.50);
-const SIGHT_Y = 0.06; // 瞄准线高度（局部坐标）
+const SIGHT_Y = 0.06; // 瞄准线高度（局部坐标，程序化路径）
+const RIFLE_SIGHT_Y = 0.112; // 瞄准线高度（局部坐标，GLB 步枪路径）
+const RIFLE_ADS_POS = new THREE.Vector3(0, -RIFLE_SIGHT_Y, -0.55);
 const MAG_BASE = new THREE.Vector3(0, -0.045, 0.02);
 const HANDLE_BASE_Z = 0.17;
 const LEFT_HAND_BASE = new THREE.Vector3(0, -0.028, -0.29);
@@ -34,10 +39,12 @@ const RIFLE_BARREL_Y = 0.38; // 模型空间枪管中心线高度（仅作模型
 const RIFLE_GRIP_Z = -0.10; // 模型空间握把 z（旋转前）
 const RIFLE_GRIP_TARGET_Z = -0.06; // 握把落点（局部坐标）：枪组原点即握持点
 const RIGHT_HAND_PROC = new THREE.Vector3(0, -0.07, 0.14);
-const RIGHT_HAND_RIFLE = new THREE.Vector3(0, -0.075, -0.05);
-// GLB 路径左手基准：护木位置经枪体实测（模型空间顶点变换后取护木段），
-// 与程序化路径的 LEFT_HAND_BASE 不同——两条路径各用各的基准。
-const LEFT_HAND_BASE_RIFLE = new THREE.Vector3(0, -0.01, -0.33);
+// GLB 路径右手：握把在 z≈-0.06..0.05、向后下方倾斜（截面实测：z=0 处枪身
+// 下沿 -0.128），手须坐低、靠后，掌心包住握把下半段才不被机匣挡住。
+const RIGHT_HAND_RIFLE = new THREE.Vector3(0, -0.085, -0.03);
+// GLB 路径左手基准：护木下沿在 y≈0.04（截面实测），v0.10 的 -0.01 让手
+// 悬在护木下方 5cm、从镜头看被弹匣挡住；抬到 0.025，手指扣住护木两侧。
+const LEFT_HAND_BASE_RIFLE = new THREE.Vector3(0, 0.025, -0.33);
 
 function easeInQuad(t) {
   return t * t;
@@ -97,6 +104,7 @@ export function createGun({ camera, rifleModel = null }) {
   let ejectPos;
   let rightHandPos = RIGHT_HAND_PROC;
   let leftHandBase = LEFT_HAND_BASE; // 换弹/包扎动画的左手基准：GLB 路径改用护木位置
+  let adsPos = ADS_POS; // 机瞄位姿：GLB 步枪路径改用更高的瞄准线/更远的 z
 
   // ---------- 路径 B：程序化模型（v0.2 原样，加载失败回退） ----------
   function buildProcedural() {
@@ -202,8 +210,8 @@ export function createGun({ camera, rifleModel = null }) {
     // 机瞄时枪托不再挡住画面中央（实测：0.08 仍高出 0.007，0.12 仅 -0.005）。
     rifle.rotation.set(0.14, Math.PI, 0);
     rifle.scale.setScalar(RIFLE_SCALE);
-    // 导轨顶沿对齐瞄准线；握把落在枪组原点（握持点）。
-    // 旋转后握把 z = -RIFLE_GRIP_Z * scale，再平移至目标落点。
+    // 导轨顶沿对齐 0.06（低于步枪瞄准线 0.112，枪身整体沉在视线之下）；
+    // 握把落在枪组原点（握持点）。旋转后握把 z = -RIFLE_GRIP_Z * scale，再平移至目标落点。
     rifle.position.set(
       0,
       SIGHT_Y - RIFLE_RAIL_Y * RIFLE_SCALE,
@@ -217,6 +225,24 @@ export function createGun({ camera, rifleModel = null }) {
     });
     group.add(rifle);
     leftHandBase = LEFT_HAND_BASE_RIFLE;
+    adsPos = RIFLE_ADS_POS;
+    // ---------- 机瞄具：觇孔环 + 准星，立在步枪瞄准线上 ----------
+    // 环心与准星尖端都在 RIFLE_SIGHT_Y 上，与机瞄时的镜头轴线重合；
+    // 环座是一段立柱（机匣顶沿约 0.045，环下缘 0.0915），读作提把式照门。
+    // 准星立在枪管上方（该处枪身顶沿约 0.09），尖端恰在瞄准线，护翼低于线。
+    const riser = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.056, 0.016), darkMetal);
+    riser.position.set(0, 0.064, 0.10);
+    group.add(riser);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.018, 0.0025, 8, 32), metal);
+    ring.position.set(0, RIFLE_SIGHT_Y, 0.10);
+    group.add(ring);
+    for (const sx of [-1, 1]) {
+      addBox(group, 0.005, 0.018, 0.02, metal, sx * 0.023, 0.10, 0.10); // 护耳，顶部低于瞄准线
+    }
+    addBox(group, 0.005, 0.03, 0.005, darkMetal, 0, 0.097, -0.40); // 准星柱，尖端在瞄准线
+    for (const sx of [-1, 1]) {
+      addBox(group, 0.004, 0.02, 0.02, darkMetal, sx * 0.012, 0.092, -0.40); // 准星护翼
+    }
     // 枪口锚点：取变换后几何最前端（-Z 端）一小片顶点的平均位置。
     // 模型节点自带局部变换，直接用模型空间常数（RIFLE_BARREL_Y）算会落
     // 在错误帧里——实测旧算法算出的枪口 y 比真实低约 0.084m。
@@ -254,9 +280,12 @@ export function createGun({ camera, rifleModel = null }) {
       buildRifle(rifleModel);
     } catch (e) {
       // GLB 摆放失败：清空枪组，退回程序化模型，游戏不受影响。
+      // 摆位/双手基准一并复位，否则残留的步枪数值会带偏回退模型。
       group.clear();
       magGroup = null;
       chargingHandle = null;
+      leftHandBase = LEFT_HAND_BASE;
+      adsPos = ADS_POS;
       buildProcedural();
     }
   } else {
@@ -391,7 +420,7 @@ export function createGun({ camera, rifleModel = null }) {
     const bp = smoothstep(state.bandagePose);
     state.bandageT += dt;
 
-    group.position.lerpVectors(HIP_POS, ADS_POS, state.ads);
+    group.position.lerpVectors(HIP_POS, adsPos, state.ads);
     group.position.z += state.kickZ;
     group.position.y -= state.reloadDip * 0.1;
     group.rotation.x = state.kickRot + state.reloadDip * 0.55;
