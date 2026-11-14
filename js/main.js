@@ -1,20 +1,23 @@
-// IMPASSE v0.9 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
+// IMPASSE v0.10 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
 // 渲染：Three.js（CDN）；输入：Pointer Lock + 触屏；毁伤：damage.js 纯函数；
 // 失血：bleeding.js 纯函数（假人 + 玩家）；记录：records.js 纯函数 + localStorage。
 // 两张地图（靶场 + 城市街区）同场建造、按组切换可见性；记录两张图共用。
-// 缓存策略：全部本地模块带 ?v=0.8 查询串，版本升级即换地址，避免新旧文件混版。
+// 素材（GLB/PBR/HDRI）由 assets.js 加载，加载完成（或超时回退）后才建造
+// 地图与枪；任何一件素材失败都走程序化/纯色回退，游戏不受影响。
+// 缓存策略：全部本地模块带 ?v=0.10 查询串，版本升级即换地址，避免新旧文件混版。
 
 import * as THREE from 'three';
-import { createControls } from './controls.js?v=0.8';
-import { createGun } from './gun.js?v=0.8';
-import { createTargets, RANGE_LAYOUT, STREET_LAYOUT } from './targets.js?v=0.8';
-import { createRange } from './range.js?v=0.8';
-import { createStreet } from './street.js?v=0.8';
-import { createHud } from './hud.js?v=0.8';
-import { createAudio } from './audio.js?v=0.8';
-import { createSettingsStore, initSettingsPanel, KEY_ACTIONS, keyLabel } from './settings.js?v=0.8';
-import { createRecordsStore } from './records.js?v=0.8';
-import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.8';
+import { createControls } from './controls.js?v=0.10';
+import { createGun } from './gun.js?v=0.10';
+import { createTargets, RANGE_LAYOUT, STREET_LAYOUT } from './targets.js?v=0.10';
+import { createRange } from './range.js?v=0.10';
+import { createStreet } from './street.js?v=0.10';
+import { createHud } from './hud.js?v=0.10';
+import { createAudio } from './audio.js?v=0.10';
+import { createSettingsStore, initSettingsPanel, KEY_ACTIONS, keyLabel } from './settings.js?v=0.10';
+import { createRecordsStore } from './records.js?v=0.10';
+import { loadAssets } from './assets.js?v=0.10';
+import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.10';
 import {
   createBleedState,
   rollBleed,
@@ -29,11 +32,11 @@ import {
   bleedSpeedFactor,
   bleedVignetteOpacity,
   bleedSwayAmplitude,
-} from './bleeding.js?v=0.8';
+} from './bleeding.js?v=0.10';
 
 // 唯一版本号：由脚本写进主页的版本标签，显示的版本即脚本版本，
 // 旧脚本缓存不会谎报新版本（HTML 里的 v0.9 只是加载前的占位文案）。
-const VERSION = '0.9';
+const VERSION = '0.10';
 
 const MAG_SIZE = 30;
 const RELOAD_TIME = 1.8;
@@ -48,8 +51,8 @@ const GRAVITY = 12; // m/s²
 // 靶场活动范围被限制在射手区（z ≥ -1.5），区内仅有的两个障碍物就是
 // 两块枪道隔板（1.1m）；木箱/油桶都在界外。顶点越过隔板留约 0.25m 余量，
 // 走跳和疾跑跳都能过去；1.6m 的钢板立柱和 1.95m 的假人仍跳不过去。
-// 街区同理：花坛 0.6m、沙袋 0.8m、路障 0.9m、木箱 1.0m、垃圾箱 1.2m 可跳，
-// 汽车 1.4m、墙体 3.2m 跳不过去。
+// 街区同理：交通锥 0.72m、沙袋 0.8m、花坛 0.9m、路障 0.9–1.04m、木箱 1.0m、
+// 垃圾箱 1.15m 可跳，汽车 ~1.5m、围栏 1.62m、集装箱 2.45m、墙体 3.2m 跳不过去。
 const JUMP_VELOCITY = 5.8; // m/s
 const BANDAGE_TIME = 2.5; // 包扎读条（秒）：键盘按住 B / 触屏点按包扎键开关；开火打断
 const COLLAPSE_FADE_TIME = 0.9; // 倒地黑场时长（秒），黑满后重生
@@ -68,6 +71,10 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
+renderer.autoClear = false;
+// 双通道渲染：主场景 + 视图模型场景分两次画，中间只清深度——
+// 所以自动清空要关掉，由主循环显式控制（主场景背景色自带强制清空，
+// 枪场景 background 为 null，不会误清主场景画面）。
 // 阴影：只有街区的太阳投射阴影（1024 贴图），靶场的灯一律不投射，
 // 开启阴影贴图对靶场没有额外开销。
 renderer.shadowMap.enabled = true;
@@ -77,20 +84,30 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1c20);
 scene.fog = new THREE.Fog(0x1a1c20, 30, 55);
 
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 120);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 160);
 camera.rotation.order = 'YXZ';
 scene.add(camera);
+
+// 视图模型独立场景：枪/双手/绷带单独渲染，用与主镜头逐帧同步的第二台相机。
+// 原因：three.js 按相机 layer 收集光源，layer 隔离挡不住世界点光源——
+// 房间顶灯离枪约 1m、强度 22，会把浅色步枪照爆白；独立场景后枪只受
+// 镜头补光 + HDRI 环境光影响。枪相机不同步（位置/朝向/FOV）枪就会与准星错位。
+const gunScene = new THREE.Scene();
+const gunCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 160);
+gunCamera.rotation.order = 'YXZ';
+gunScene.add(gunCamera);
+// 枪相机必须挂进枪场景，否则枪组（枪相机的子级）不在渲染图里，
+// 枪会直接消失——主场景里主相机同样是 scene.add(camera) 挂进去的。
 
 // ---------- 地图：两张图同场建造，按组切换 ----------
 // 每张地图的环境与靶子挂在同一个组里（靶子以环境组为 parent）：
 // 切图 = 换组的 visible + 换射线/碰撞集合 + 换天空/雾。灯光挂在组里，
 // 隐藏的组灯光自动失效，不重建。靶子 update 只跑当前地图的一套。
-const rangeEnv = createRange({ scene });
-const streetEnv = createStreet({ scene });
 const hud = createHud();
 const audio = createAudio();
 const settings = createSettingsStore();
 const recordsStore = createRecordsStore();
+audio.preloadSamples(); // fire-and-forget：采样在后台解码，失败的那一声走合成回退
 // 失血导致模块损毁时，targets 通过事件回调让主循环写日志/弹提示（两套靶子共用）。
 const onTargetEvent = (evt) => {
   if (evt.type === 'bleedDestroy') {
@@ -98,16 +115,21 @@ const onTargetEvent = (evt) => {
     if (evt.incapacitated) hud.toast('目标失能！');
   }
 };
-const rangeTargets = createTargets({ parent: rangeEnv.group, onEvent: onTargetEvent, layout: RANGE_LAYOUT });
-const streetTargets = createTargets({ parent: streetEnv.group, onEvent: onTargetEvent, layout: STREET_LAYOUT });
-const MAPS = {
-  range: { id: 'range', label: '靶场', env: rangeEnv, targets: rangeTargets },
-  street: { id: 'street', label: '街区', env: streetEnv, targets: streetTargets },
-};
+// 地图、靶子与枪在素材加载完成后才建造（见底部 init）：加载失败的模型
+// 走程序化回退，建造参数按加载结果定。建造完成前 initialized 为 false，
+// 开始按钮禁用、选图与开局都被挡住，主循环也不启动。
+let rangeEnv = null;
+let streetEnv = null;
+let rangeTargets = null;
+let streetTargets = null;
+let MAPS = null;
 let activeMapId = 'range';
-let activeMap = MAPS.range;
+let activeMap = null;
 let allHitMeshes = [];
 let colliders = [];
+let gun = null;
+let initialized = false;
+let assetReport = null; // 素材加载结果摘要（调试钩子读取）
 function setActiveMap(id) {
   activeMapId = id;
   activeMap = MAPS[id];
@@ -116,9 +138,10 @@ function setActiveMap(id) {
   colliders = [...activeMap.env.colliders, ...activeMap.targets.colliders];
   scene.background = activeMap.env.env.background;
   scene.fog = activeMap.env.env.fog;
+  // 环境光与曝光按地图走：街区用 HDRI 环境贴图 + 曝光 1.0，靶场无环境光 + 1.05。
+  scene.environment = activeMap.env.env.environment || null;
+  renderer.toneMappingExposure = activeMap.env.env.exposure ?? 1.05;
 }
-setActiveMap('range');
-const gun = createGun({ camera });
 
 const controls = createControls({
   canvas,
@@ -480,15 +503,17 @@ function updateEffects(dt) {
 
 // ---------- 射击 ----------
 const raycaster = new THREE.Raycaster();
-raycaster.far = 60;
+raycaster.far = 100; // 街区最长视线约 85m（主街贯通），60m 会在远端丢命中
 const _dir = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
 const _muzzle = new THREE.Vector3();
 const _hitPoint = new THREE.Vector3();
+let lastShot = null; // 调试：最近一发假人命中的点位与判定部位
 const _eject = new THREE.Vector3();
 
 function shoot(now) {
+  lastShot = null; // 本发未命中假人时保持 null，不读上一发的旧值
   if (ammo <= 0) {
     audio.dryFire();
     startReload();
@@ -541,8 +566,18 @@ function shoot(now) {
   const incidenceDeg = THREE.MathUtils.radToDeg(Math.acos(cosInc));
 
   if (surface.kind === 'dummy') {
+    // 部位：士兵假人按命中点高度带判定（zoneAtPoint），程序化假人用 mesh
+    // 自带的 zone（zoneAtPoint 返回 null 时回退），两条路径同一份毁伤评估。
+    const zone = activeMap.targets.zoneAtPoint(obj.userData.dummy, _hitPoint) || obj.userData.zone;
+    // 调试图：记录最近一发命中点与判定部位（probeRay 零散布对照用）。
+    lastShot = {
+      zone,
+      point: { x: +_hitPoint.x.toFixed(3), y: +_hitPoint.y.toFixed(3), z: +_hitPoint.z.toFixed(3) },
+      dist: +rangeM.toFixed(2),
+      dummyIsSoldier: obj.userData.dummy ? obj.userData.dummy.isSoldier : null,
+    };
     const evalResult = evaluateHit({
-      zone: obj.userData.zone,
+      zone,
       incidenceDeg,
       rangeM,
       energy,
@@ -623,6 +658,7 @@ function startReload() {
 function toggleMode() {
   fireMode = fireMode === 'auto' ? 'semi' : 'auto';
   hud.setFireMode(fireMode);
+  audio.modeSwitch();
   hud.toast(fireMode === 'auto' ? '切换为连发' : '切换为单发');
 }
 
@@ -743,6 +779,7 @@ function goHome() {
 
 // ---------- 开始 / 暂停 ----------
 function startGame() {
+  if (!initialized) return; // 素材还在加载：按钮禁用中，这道是第二道防线
   resetSession();
   document.body.classList.remove('home'); // 进地图：显示局内 HUD
   playing = true;
@@ -758,11 +795,12 @@ function startGame() {
 // 主页模式选择：点卡片切换地图（金色高亮移动），进入按钮文案跟随，
 // 背景 3D 场景即时切换。记录两张图共用，v0.9 不分地图统计。
 function selectMap(id) {
-  if (!MAPS[id] || id === activeMapId) return;
+  if (!initialized || !MAPS[id] || id === activeMapId) return;
   document.querySelectorAll('.mode-card[data-map]').forEach((c) => {
     c.classList.toggle('selected', c.dataset.map === id);
   });
   document.getElementById('btn-start').textContent = `进入${MAPS[id].label}`;
+  audio.uiClick();
   setActiveMap(id);
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 }
@@ -828,10 +866,14 @@ function closeHelp() {
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 }
 document.getElementById('btn-help').addEventListener('click', () => {
+  audio.uiClick();
   openHelp();
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 });
-document.getElementById('btn-help-close').addEventListener('click', closeHelp);
+document.getElementById('btn-help-close').addEventListener('click', () => {
+  audio.uiClick();
+  closeHelp();
+});
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -1113,7 +1155,20 @@ function animate() {
 
   activeMap.targets.update(dt, now);
   updateEffects(dt);
+  // 视图模型相机与主镜头逐帧同步（位置/朝向/FOV/宽高比），再分两次渲染：
+  // 主场景先画（背景色自带强制清空），清空深度后画枪——枪永远在世界前面，
+  // 不会被近处墙体裁掉，也不吃世界灯光。
+  gunCamera.position.copy(camera.position);
+  gunCamera.quaternion.copy(camera.quaternion);
+  if (gunCamera.fov !== camera.fov || gunCamera.aspect !== camera.aspect) {
+    gunCamera.fov = camera.fov;
+    gunCamera.aspect = camera.aspect;
+    gunCamera.updateProjectionMatrix();
+  }
+  renderer.clear();
   renderer.render(scene, camera);
+  renderer.clearDepth();
+  renderer.render(gunScene, gunCamera);
 }
 
 // 版本标签由脚本写入：显示的版本即实际运行的脚本版本。
@@ -1135,8 +1190,14 @@ window.__impasseDebug = {
       g.traverse((o) => { if (o.isMesh || o.isSprite) n++; });
       return n;
     };
-    return { range: count(rangeEnv.group), street: count(streetEnv.group) };
+    return {
+      range: rangeEnv ? count(rangeEnv.group) : 0,
+      street: streetEnv ? count(streetEnv.group) : 0,
+    };
   },
+  get initialized() { return initialized; },
+  get assets() { return assetReport; },
+  get audioSamples() { return audio.sampleStatus(); },
   get playerY() { return player.pos.y; },
   get feetY() { return player.pos.y - EYE_HEIGHT; },
   get cameraY() { return camera.position.y; },
@@ -1171,7 +1232,40 @@ window.__impasseDebug = {
     player.yaw = yaw;
     player.pitch = pitch;
   },
+  // 零散布探针：从当前镜头向 (tx,ty,tz) 打一条无散布射线，返回命中点、
+  // 假人组局部坐标与判定部位——用于定位分区判定与瞄准之间的偏差。
+  // 不开火、不耗弹药、不改分数。
+  probeRay(tx, ty, tz) {
+    const dx = tx - camera.position.x, dy = ty - camera.position.y, dz = tz - camera.position.z;
+    player.yaw = Math.atan2(-dx, -dz);
+    player.pitch = Math.asin(dy / Math.hypot(dx, dy, dz));
+    camera.rotation.y = player.yaw;
+    camera.rotation.x = player.pitch;
+    camera.rotation.z = 0;
+    camera.updateMatrixWorld(true);
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    raycaster.set(camera.position.clone(), dir);
+    const hits = raycaster.intersectObjects(allHitMeshes, false);
+    if (!hits.length) return { hit: false };
+    const h = hits[0];
+    const dummy = h.object.userData.dummy;
+    let local = null, zone = null;
+    if (dummy) {
+      const l = dummy.group.worldToLocal(h.point.clone());
+      local = { x: +l.x.toFixed(3), y: +l.y.toFixed(3), z: +l.z.toFixed(3) };
+      zone = activeMap.targets.zoneAtPoint(dummy, h.point);
+    }
+    return {
+      hit: true,
+      point: { x: +h.point.x.toFixed(3), y: +h.point.y.toFixed(3), z: +h.point.z.toFixed(3) },
+      dist: +h.distance.toFixed(2),
+      kind: h.object.userData.surface && h.object.userData.surface.kind,
+      local, zone, dummyIsSoldier: dummy ? dummy.isSoldier : null,
+    };
+  },
   simulateHit(zone, severity) { playerTakeHit(zone, severity); },
+  get lastShot() { return lastShot; },
   getDummies() { return activeMap.targets.getDummies(); },
 };
 
@@ -1180,4 +1274,70 @@ hud.setFireMode(fireMode);
 hud.setCrosshair(0, true);
 renderRecords();
 hud.showStart();
-animate();
+
+// ---------- 素材加载 → 建造 → 启动 ----------
+// 主页 DOM 立即显示（带“加载资源…”状态与禁用的进入按钮），3D 场景在
+// 素材加载完成（或 8 秒超时回退）后建造，主循环随之启动。加载失败的
+// 模型/贴图/HDRI 各自走回退：程序化枪与假人、色块建筑、纯色材质、
+// 无环境光——游戏始终可玩。
+async function init() {
+  const statusEl = document.getElementById('asset-status');
+  const startBtn = document.getElementById('btn-start');
+  const setStatus = (t) => { if (statusEl) statusEl.textContent = t; };
+  let assetSet;
+  try {
+    assetSet = await loadAssets({
+      onProgress: (done, total) => setStatus(`加载资源… ${done}/${total}`),
+    });
+  } catch (e) {
+    // loadAssets 内部已全量兜底，这里是最后一道防线：空素材集 + 全回退。
+    assetSet = { models: new Map(), failedModels: new Set(), textures: {}, hdr: null, timedOut: true };
+  }
+  assetReport = {
+    modelsLoaded: assetSet.models.size,
+    failedModels: [...assetSet.failedModels],
+    hdr: !!assetSet.hdr,
+    timedOut: assetSet.timedOut,
+  };
+  // HDRI → PMREM 环境贴图（只有街区用；失败则无环境光，靠太阳 + 半球光）。
+  let envTexture = null;
+  if (assetSet.hdr) {
+    try {
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      envTexture = pmrem.fromEquirectangular(assetSet.hdr).texture;
+      pmrem.dispose();
+      assetSet.hdr.dispose();
+    } catch (e) { envTexture = null; }
+  }
+  // 假人士兵：靶场用绿色版、街区用蓝色版，任一失败时互相顶替，都失败则程序化。
+  const rangeSoldier = assetSet.models.get('soldier') || assetSet.models.get('soldier-blue') || null;
+  const streetSoldier = assetSet.models.get('soldier-blue') || assetSet.models.get('soldier') || null;
+  rangeEnv = createRange({ scene });
+  streetEnv = createStreet({ scene, assets: assetSet });
+  if (envTexture) {
+    streetEnv.env.environment = envTexture;
+    gunScene.environment = envTexture; // 视图模型的环境光与街区共用同一张 HDRI
+  }
+  rangeTargets = createTargets({ parent: rangeEnv.group, onEvent: onTargetEvent, layout: RANGE_LAYOUT, soldierModel: rangeSoldier });
+  streetTargets = createTargets({ parent: streetEnv.group, onEvent: onTargetEvent, layout: STREET_LAYOUT, soldierModel: streetSoldier });
+  MAPS = {
+    range: { id: 'range', label: '靶场', env: rangeEnv, targets: rangeTargets },
+    street: { id: 'street', label: '街区', env: streetEnv, targets: streetTargets },
+  };
+  setActiveMap('range');
+  gun = createGun({ camera: gunCamera, rifleModel: assetSet.models.get('rifle') || null });
+  initialized = true;
+  if (startBtn) {
+    startBtn.disabled = false;
+    startBtn.textContent = `进入${MAPS[activeMapId].label}`;
+  }
+  setStatus(assetSet.failedModels.size > 0
+    ? `部分素材加载失败，已用备用模型（${assetSet.failedModels.size} 件）`
+    : '');
+  animate();
+}
+
+// 先渲染一帧纯背景色，避免加载期间画布全黑；主循环由 init 启动。
+renderer.clear();
+renderer.render(scene, camera);
+init();

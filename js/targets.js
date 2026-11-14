@@ -3,8 +3,15 @@
 // 头部或胸部模块损毁即失能倒地。
 // 命中可能触发失血（见 bleeding.js）：持续累积所在模块的毁伤，
 // 直到部位损毁、目标失能或靶子重置。
+//
+// 假人两条路径（assets.js 加载结果决定）：
+//   A. Quaternius 士兵 GLB（CC0，Idle 姿态已冻结）：6 块蒙皮 mesh 互相
+//      重叠（分层服装），无法按 mesh 分部位，改用命中点高度带判定部位
+//      （见 zoneAtPoint）。部位损毁时整体按损毁数变暗，读作“战损”。
+//   B. 程序化方块假人（加载失败回退）：每部位独立 box，mesh 自带 zone。
 
 import * as THREE from 'three';
+import { clone as skClone } from 'three/addons/utils/SkeletonUtils.js';
 import {
   createBleedState,
   rollBleed,
@@ -13,8 +20,8 @@ import {
   clearBleeds,
   bleedingZones,
   totalSeverity,
-} from './bleeding.js?v=0.8';
-import { ZONE_LABELS } from './damage.js?v=0.8';
+} from './bleeding.js?v=0.10';
+import { ZONE_LABELS } from './damage.js?v=0.10';
 
 const HOLE_GEO = new THREE.CircleGeometry(0.014, 10);
 const HOLE_MAT = new THREE.MeshBasicMaterial({ color: 0x111111 });
@@ -61,8 +68,17 @@ function easeOutCubic(t) {
   return 1 - Math.pow(1 - t, 3);
 }
 
-// 各部位伤口高度（米，从 part() 的实际摆放位置量得），用于失血滴落点。
-const ZONE_ANCHOR_Y = { leg: 0.4, abdomen: 0.98, chest: 1.42, arm: 1.32, head: 1.82 };
+// 各部位伤口高度（米，按士兵模型 Idle 姿态量得），用于失血滴落点。
+// 程序化假人略高（头顶 1.95m），滴落点差 0.2m 以内，落地即淡出，看不出区别。
+const ZONE_ANCHOR_Y = { leg: 0.35, abdomen: 0.85, chest: 1.25, arm: 1.15, head: 1.7 };
+
+// 士兵模型部位判定带（Idle 姿态实测：高 1.91m，面朝 +Z，居中后半宽 0.38m）：
+// 头 ≥1.48，胸 1.05–1.48，腹 0.62–1.05，腿 <0.62；|x|>0.27 且 y 在
+// 0.6–1.45 之间判手臂（手臂垂在身体两侧，躯干半宽约 0.22m）。
+const ZONE_BANDS = { headY: 1.48, chestY: 1.05, abdomenY: 0.62, armX: 0.27, armY0: 0.6, armY1: 1.45 };
+// 模型包围盒中心偏移（Idle 实测中心 x=+0.048、z=-0.165）：反向平移使角色
+// 站在假人组原点正上方，判定带与碰撞体都以组原点为基准。
+const SOLDIER_OFFSET = new THREE.Vector3(-0.048, 0, 0.165);
 
 function dripTexture() {
   const c = document.createElement('canvas');
@@ -99,30 +115,42 @@ export const RANGE_LAYOUT = {
   mover: { x: 0, z: -20, axis: 'x', amplitude: 3.6, speed: 0.45, railLength: 8.6, rotY: 0, posts: false },
 };
 
+// 90×90 街区（出生点主街南端 (0, 40)，面向北）：
+// 街道 x ∈ [-4,4]/[-30,-22]/[22,30]，z ∈ [-4,4]/[-30,-22]/[22,30]；
+// 广场 (-13,-13) 与 (13,13)；房间 R1(-13,-40)/R2(-40,-13)/R3(13,-40)/
+// R4(40,13)/R5(-13,40)；工业角 (37,-37)。
 export const STREET_LAYOUT = {
   papers: [
-    { x: -6, z: -3, rotY: 0 }, // 广场西
-    { x: 7, z: -5, rotY: 0 }, // 广场东
-    { x: -10, z: -16, rotY: Math.PI / 2 }, // 北侧西巷，面向巷口（东）
-    { x: 10, z: 9, rotY: -Math.PI / 2 }, // 南侧东巷，面向巷口（西）
-    { x: -12, z: -11, rotY: Math.PI / 2 }, // 西北房间内，面向房门（东）
-    { x: 2, z: -21, rotY: 0 }, // 主街北端远靶（距出生点约 37m）
+    { x: -8, z: -12, rotY: 0 }, // 西广场
+    { x: 10, z: 10, rotY: 0 }, // 东广场
+    { x: -26, z: -36, rotY: 0 }, // 西街北段
+    { x: 26, z: 36, rotY: 0 }, // 东街南段
+    { x: -13, z: -40, rotY: 0 }, // R1 房间内，面向房门（南）
+    { x: 13, z: -40, rotY: 0 }, // R3 房间内，面向房门（南）
+    { x: 0, z: -16, rotY: 0 }, // 主街中段远靶（距出生点约 56m）
+    { x: -26, z: 18, rotY: 0 }, // 西街南段
+    { x: 26, z: -8, rotY: 0 }, // 东街中段
+    { x: -40, z: -13, rotY: Math.PI / 2 }, // R2 房间内，面向房门（东）
   ],
   steels: [
-    { x: -3.5, z: -12, rotY: 0 }, // 主街北段西侧
-    { x: -19, z: 12, rotY: 0 }, // 西侧街南段
-    { x: 19, z: -20, rotY: 0 }, // 东侧街北端
+    { x: -2, z: -28, rotY: 0 }, // 主街北段
+    { x: 26, z: -34, rotY: 0 }, // 东街北端
+    { x: 37, z: -37, rotY: 0 }, // 工业角
+    { x: -34, z: 26, rotY: 0 }, // 南侧横街西段
+    { x: 40, z: 13, rotY: -Math.PI / 2 }, // R4 房间内，面向房门（西）
   ],
   dummies: [
-    { x: -2, z: -6, rotY: 0 }, // 广场
-    { x: 8, z: -20, rotY: 0 }, // 东北房间内
-    { x: -19, z: -19, rotY: 0 }, // 西侧街北端
+    { x: -13, z: -16, rotY: 0 }, // 西广场
+    { x: 13, z: 8, rotY: 0 }, // 东广场
+    { x: 0, z: -32, rotY: 0 }, // 主街北段
+    { x: -26, z: -12, rotY: 0 }, // 西街中段
+    { x: 37, z: -30, rotY: 0 }, // 工业角
   ],
-  // 移动靶横穿北侧东巷（z=-16，x 在 5.5..14.5 之间滑动），面向巷口（西）。
-  mover: { x: 10, z: -16, axis: 'x', amplitude: 4.5, speed: 0.4, railLength: 10.4, rotY: -Math.PI / 2, posts: true },
+  // 移动靶横穿主街（z=-13，x 在 -3.2..3.2 之间滑动），面向南（出生点方向）。
+  mover: { x: 0, z: -13, axis: 'x', amplitude: 3.2, speed: 0.4, railLength: 7.8, rotY: 0, posts: true },
 };
 
-export function createTargets({ parent, onEvent, layout }) {
+export function createTargets({ parent, onEvent, layout, soldierModel = null }) {
   const hitMeshes = [];
   // 障碍物碰撞体（与 range.js 相同格式），由 main.js 做圆形推离。
   // top 从几何体实测：纸靶支架腿高 1.1m，钢板立柱顶 1.6m，假人头顶 1.95m。
@@ -250,7 +278,6 @@ export function createTargets({ parent, onEvent, layout }) {
     group.position.set(x, 0, z);
     group.rotation.y = rotY;
     parent.add(group);
-    const baseMat = new THREE.MeshStandardMaterial({ color: 0x5a6248, roughness: 0.85, metalness: 0.05 });
     const dummy = {
       group,
       integrity: { head: 1, chest: 1, abdomen: 1, arm: 1, leg: 1 },
@@ -261,49 +288,93 @@ export function createTargets({ parent, onEvent, layout }) {
       bleed: createBleedState(),
       dripT: 0, // 失血滴落计时
       pool: null, // 脚下血泊（随总失血量长大）
+      isSoldier: !!soldierModel,
+      baseColors: [], // 士兵路径：每块 mesh 材质的原始颜色（重置时恢复）
     };
-    function part(w, h, d, px, py, zone) {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), baseMat.clone());
-      m.castShadow = true;
-      m.position.set(px, py, 0);
-      m.userData.surface = { kind: 'dummy', hardness: 0.15 };
-      m.userData.zone = zone;
-      m.userData.dummy = dummy;
-      m.userData.flashT = 0;
-      m.material.emissive = new THREE.Color(0xff4030);
-      m.material.emissiveIntensity = 0;
-      group.add(m);
-      hitMeshes.push(m);
-      dummy.meshes.push(m);
-      return m;
+    let poolY = 0.02;
+    if (soldierModel) {
+      // 士兵路径：骨骼克隆继承冻结的 Idle 姿态；材质按假人克隆一份，
+      // 否则命中闪红/战损变暗会串到所有假人身上。
+      const model = skClone(soldierModel);
+      model.position.copy(SOLDIER_OFFSET);
+      group.add(model);
+      model.traverse((o) => {
+        if (!o.isMesh) return;
+        o.castShadow = true;
+        o.frustumCulled = false; // 冻结姿态的蒙皮包围盒不可靠，关掉视锥剔除防闪没
+        o.material = o.material.clone();
+        o.material.emissive = new THREE.Color(0xff4030);
+        o.material.emissiveIntensity = 0;
+        dummy.baseColors.push({ mat: o.material, color: o.material.color.clone() });
+        o.userData.surface = { kind: 'dummy', hardness: 0.15 };
+        o.userData.dummy = dummy;
+        o.userData.flashT = 0;
+        hitMeshes.push(o);
+        dummy.meshes.push(o);
+      });
+    } else {
+      // 程序化路径（回退）：每部位独立 box，mesh 自带 zone。
+      const baseMat = new THREE.MeshStandardMaterial({ color: 0x5a6248, roughness: 0.85, metalness: 0.05 });
+      const part = (w, h, d, px, py, zone) => {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), baseMat.clone());
+        m.castShadow = true;
+        m.position.set(px, py, 0);
+        m.userData.surface = { kind: 'dummy', hardness: 0.15 };
+        m.userData.zone = zone;
+        m.userData.dummy = dummy;
+        m.userData.flashT = 0;
+        m.material.emissive = new THREE.Color(0xff4030);
+        m.material.emissiveIntensity = 0;
+        group.add(m);
+        hitMeshes.push(m);
+        dummy.meshes.push(m);
+        return m;
+      };
+      part(0.13, 0.8, 0.13, -0.11, 0.4, 'leg');
+      part(0.13, 0.8, 0.13, 0.11, 0.4, 'leg');
+      part(0.34, 0.35, 0.2, 0, 0.98, 'abdomen');
+      part(0.4, 0.45, 0.22, 0, 1.42, 'chest');
+      part(0.1, 0.62, 0.1, -0.27, 1.32, 'arm');
+      part(0.1, 0.62, 0.1, 0.27, 1.32, 'arm');
+      part(0.24, 0.26, 0.24, 0, 1.82, 'head');
+      const platform = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.45, 0.06, 20), standMat);
+      platform.position.set(0, 0.03, 0);
+      group.add(platform);
+      poolY = 0.065; // 血泊盖在底座顶面上方 5mm
     }
-    part(0.13, 0.8, 0.13, -0.11, 0.4, 'leg');
-    part(0.13, 0.8, 0.13, 0.11, 0.4, 'leg');
-    part(0.34, 0.35, 0.2, 0, 0.98, 'abdomen');
-    part(0.4, 0.45, 0.22, 0, 1.42, 'chest');
-    part(0.1, 0.62, 0.1, -0.27, 1.32, 'arm');
-    part(0.1, 0.62, 0.1, 0.27, 1.32, 'arm');
-    part(0.24, 0.26, 0.24, 0, 1.82, 'head');
-    const platform = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.45, 0.06, 20), standMat);
-    platform.position.set(0, 0.03, 0);
-    group.add(platform);
-    // 血泊：平时隐藏，失血后出现并随总失血量长大（盖在底座顶面上方 5mm）
+    // 血泊：平时隐藏，失血后出现并随总失血量长大
     const pool = new THREE.Mesh(
       new THREE.CircleGeometry(1, 20),
       new THREE.MeshBasicMaterial({ color: 0x5a0d0d, transparent: true, opacity: 0.8, depthWrite: false })
     );
     pool.rotation.x = -Math.PI / 2;
-    pool.position.set(0, 0.065, 0);
+    pool.position.set(0, poolY, 0);
     pool.scale.setScalar(0.001);
     pool.visible = false;
     group.add(pool);
     dummy.pool = pool;
     dummies.push(dummy);
-    // 假人整体（含身体）高 1.95m（头顶 1.82 + 0.26 / 2），跳不过去
+    // 假人整体高 1.95m（士兵 1.91m），跳不过去
     colliders.push({ type: 'circle', x, z, r: 0.45, top: 1.95 });
     return dummy;
   }
   for (const d of layout.dummies) makeDummy(d.x, d.z, d.rotY || 0);
+
+  // 命中点 → 部位（士兵路径）：命中点转到假人组局部空间，按高度带判定。
+  // 程序化路径返回 null，调用方改用 mesh.userData.zone。
+  const _local = new THREE.Vector3();
+  function zoneAtPoint(dummy, point) {
+    if (!dummy || !dummy.isSoldier) return null;
+    _local.copy(point);
+    dummy.group.worldToLocal(_local);
+    const y = _local.y;
+    const ax = Math.abs(_local.x);
+    if (y >= ZONE_BANDS.headY) return 'head';
+    if (ax > ZONE_BANDS.armX && y >= ZONE_BANDS.armY0 && y < ZONE_BANDS.armY1) return 'arm';
+    if (y >= ZONE_BANDS.chestY) return 'chest';
+    if (y >= ZONE_BANDS.abdomenY) return 'abdomen';
+    return 'leg';
+  }
 
   // ---------- 失血滴落粒子（对象池） ----------
   const dripTex = dripTexture();
@@ -355,8 +426,14 @@ export function createTargets({ parent, onEvent, layout }) {
   function destroyZone(dummy, zone) {
     dummy.destroyed.add(zone);
     stopBleed(dummy.bleed, zone);
-    for (const m of dummy.meshes) {
-      if (m.userData.zone === zone) m.material.color.setHex(0x3a3f30);
+    if (dummy.isSoldier) {
+      // 士兵 mesh 不按部位分：整体随损毁部位数变暗，读作“战损”。
+      const k = Math.pow(0.72, dummy.destroyed.size);
+      for (const { mat, color } of dummy.baseColors) mat.color.copy(color).multiplyScalar(k);
+    } else {
+      for (const m of dummy.meshes) {
+        if (m.userData.zone === zone) m.material.color.setHex(0x3a3f30);
+      }
     }
     if (zone === 'head' || zone === 'chest') {
       dummy.incapacitated = true;
@@ -398,9 +475,17 @@ export function createTargets({ parent, onEvent, layout }) {
 
   function applyDummyHit(mesh, evalResult) {
     const dummy = mesh.userData.dummy;
-    const zone = mesh.userData.zone;
-    mesh.userData.flashT = 0.18;
-    mesh.material.emissiveIntensity = 1;
+    // 部位取毁伤评估的结果：士兵路径是高度带判定的，程序化路径等于 mesh 的 zone。
+    const zone = evalResult.zone;
+    if (dummy && dummy.isSoldier) {
+      for (const m of dummy.meshes) {
+        m.userData.flashT = 0.18;
+        m.material.emissiveIntensity = 1;
+      }
+    } else if (mesh) {
+      mesh.userData.flashT = 0.18;
+      mesh.material.emissiveIntensity = 1;
+    }
     if (!dummy || dummy.incapacitated) {
       return {
         log: `命中${evalResult.zoneLabel} · ${evalResult.outcomeLabel}（目标已失能）`,
@@ -536,8 +621,11 @@ export function createTargets({ parent, onEvent, layout }) {
       dummy.dripT = 0;
       dummy.pool.visible = false;
       dummy.pool.scale.setScalar(0.001);
+      if (dummy.isSoldier) {
+        for (const { mat, color } of dummy.baseColors) mat.color.copy(color);
+      }
       for (const m of dummy.meshes) {
-        m.material.color.setHex(0x5a6248);
+        if (!dummy.isSoldier) m.material.color.setHex(0x5a6248);
         m.material.emissiveIntensity = 0;
         m.userData.flashT = 0;
       }
@@ -574,6 +662,7 @@ export function createTargets({ parent, onEvent, layout }) {
     applyPaperHit,
     applySteelHit,
     applyDummyHit,
+    zoneAtPoint,
     getClearState,
     // 调试用：自动化验证读取假人状态（模块完整度/失血/失能），不影响游戏。
     getDummies() {

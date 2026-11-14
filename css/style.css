@@ -1,3 +1,8 @@
+/* Rajdhani（SIL OFL 1.1，见 assets/fonts/OFL.txt）：只含拉丁字母与数字，
+   标题与 HUD 数字用它，中文自动落到后面的系统字体栈。
+   字体文件以 base64 文本（.b64）存仓库，由 js/assets.js 用 FontFace 从
+   解码字节加载（CSS @font-face 无法读 .b64）；加载失败时落到系统字体。 */
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 html, body {
@@ -102,7 +107,7 @@ html, body {
   pointer-events: none;
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
 }
-#ammo { font-size: 40px; font-weight: bold; line-height: 1; }
+#ammo { font-size: 40px; font-weight: bold; line-height: 1; font-family: 'Rajdhani', -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
 #ammo-mag.low { color: #ff5a4d; }
 #ammo-res { font-size: 18px; color: #cfcfcf; margin-left: 4px; }
 #gun-state { margin-top: 6px; font-size: 15px; }
@@ -562,7 +567,7 @@ body.settings-open { touch-action: auto; }
   padding: 24px 0;
 }
 .home-main { flex: 1; min-width: 0; text-align: left; }
-.home-title { font-size: 52px; letter-spacing: 6px; line-height: 1.1; }
+.home-title { font-size: 52px; letter-spacing: 6px; line-height: 1.1; font-family: 'Rajdhani', -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; font-weight: 700; }
 .home-title .ver { font-size: 20px; color: #ffd75e; letter-spacing: 0; margin-left: 6px; }
 .home-sub { margin-top: 10px; color: #cfcfcf; font-size: 16px; letter-spacing: 1px; }
 .mode-list { margin-top: 26px; display: flex; flex-direction: column; gap: 10px; }
@@ -609,6 +614,9 @@ body.settings-open { touch-action: auto; }
   cursor: pointer;
 }
 .home-btn-primary:active { background: #f2c94b; }
+.home-btn-primary:disabled { background: #8a8a8a; color: #e8e8e8; cursor: wait; letter-spacing: 1px; }
+#asset-status { min-height: 18px; font-size: 13px; color: #bdbdbd; text-align: center; }
+#asset-status:empty { display: none; }
 .home-actions-row { display: flex; gap: 10px; }
 .home-btn-ghost {
   flex: 1;
@@ -630,6 +638,7 @@ body.settings-open { touch-action: auto; }
 }
 .home-foot { margin-top: 22px; font-size: 13px; color: #8a8a8a; }
 .home-foot .ver { color: #ffd75e; }
+.home-credits { margin-top: 6px; font-size: 12px; color: #6f6f6f; }
 .home-records {
   width: 300px;
   flex-shrink: 0;

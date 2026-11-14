@@ -3,12 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>IMPASSE v0.9</title>
-<link rel="stylesheet" href="css/style.css?v=0.8">
+<title>IMPASSE v0.10</title>
+<link rel="stylesheet" href="css/style.css?v=0.10">
 <script type="importmap">
 {
   "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
   }
 }
 </script>
@@ -89,7 +90,7 @@
 <div id="start-overlay" class="overlay show">
   <div class="home">
     <div class="home-main">
-      <h1 class="home-title">IMPASSE <span class="ver">v0.9</span></h1>
+      <h1 class="home-title">IMPASSE <span class="ver">v0.10</span></h1>
       <p class="home-sub">单人射击 · 无血条 · 模块化毁伤判定</p>
       <div class="mode-list">
         <div class="mode-card selected" data-map="range">
@@ -101,7 +102,7 @@
         <div class="mode-card" data-map="street">
           <div class="mode-info">
             <span class="mode-name">城市街区</span>
-            <span class="mode-desc">室外街区 · 商铺 / 小巷 / 广场 · 可进房间 · 边走边打</span>
+            <span class="mode-desc">90×90m 室外街区 · 双广场 / 工业角 / 5 间可进房间 · 边走边打</span>
           </div>
         </div>
         <div class="mode-card disabled" aria-disabled="true">
@@ -113,13 +114,15 @@
         </div>
       </div>
       <div class="home-actions">
-        <button id="btn-start" type="button" class="home-btn-primary">进入靶场</button>
+        <button id="btn-start" type="button" class="home-btn-primary" disabled>加载资源…</button>
+        <p id="asset-status" aria-live="polite"></p>
         <div class="home-actions-row">
           <button id="btn-settings-start" type="button" class="home-btn-ghost"><svg class="gear-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置</button>
           <button id="btn-help" type="button" class="home-btn-ghost">操作说明</button>
         </div>
       </div>
-      <p class="home-foot"><span class="ver">v0.9</span> · Three.js · 纯静态页面</p>
+      <p class="home-foot"><span class="ver">v0.10</span> · Three.js · 纯静态页面</p>
+      <p class="home-credits">素材：Kenney · Quaternius · Poly Haven（CC0）· 字体 Rajdhani（OFL）</p>
     </div>
     <div class="home-records">
       <h2>射击记录</h2>
@@ -155,6 +158,6 @@
   <div class="panel settings-panel" id="settings-panel"></div>
 </div>
 
-<script type="module" src="js/main.js?v=0.8"></script>
+<script type="module" src="js/main.js?v=0.10"></script>
 </body>
 </html>
