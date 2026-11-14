@@ -5,13 +5,20 @@
 // （damage.js / bleeding.js / armor.js），只是没有血条：部位模块毁伤累积，
 // 头/胸模块损毁即阵亡。
 //
+// v0.14 战术层（Ryan 定方向：更聪明，不改数值——命中率/反应延迟/毁伤
+// 一字不动，只改走位决策）：掩体探头循环（藏身→探头短点射→缩回）、
+// 小队包抄（2 打 1 时一人牵制一人绕侧）、残血撤退 + 掩体后包扎、
+// 目标失联后迂回搜寻、目标分配（不全队集火一人）、换弹先找掩体、
+// 同队散开队形。全部走同一套移动/动画系统（缓动速度/交叉淡化/侧倾），
+// 不新增硬切。
+//
 // 队伍识别：蓝队用蓝色士兵模型，红队用绿色士兵模型染红（只染制服/头盔
 // 材质，皮肤与面部不动），另加双肩队色臂章 + 脚下队色光环——30m 外也能
 // 一眼认出敌我。没有悬浮标记（Ryan 不要）。
 
 import * as THREE from 'three';
 import { clone as skClone } from 'three/addons/utils/SkeletonUtils.js';
-import { evaluateHit, ZONE_LABELS } from './damage.js?v=0.13';
+import { evaluateHit, ZONE_LABELS } from './damage.js?v=0.14';
 import {
   createBleedState,
   rollBleed,
@@ -20,8 +27,8 @@ import {
   clearBleeds,
   bleedingZones,
   BLEED_TICK_RATE,
-} from './bleeding.js?v=0.13';
-import { createGearState, applyGearHit, GEAR_LABELS } from './armor.js?v=0.13';
+} from './bleeding.js?v=0.14';
+import { createGearState, applyGearHit, GEAR_LABELS } from './armor.js?v=0.14';
 
 // 士兵模型部位判定带：与 targets.js 的 ZONE_BANDS / SOLDIER_OFFSET 完全一致，
 // 两边改一边必须同步（同一模型、同一 Idle 姿态）。
@@ -50,6 +57,9 @@ const SIGHT_RANGE = 48;
 const SIGHT_HALF_FOV = 0.96; // 视野半角约 55°
 const BOT_DAMAGE_SCALE = 0.85; // 机器人单发毁伤略低于玩家步枪
 const RESPAWN_TIME = 3;
+const BOT_BANDAGE_TIME = 2.5; // 机器人包扎读条（秒），与玩家同一时长
+const RETREAT_INTEGRITY = 0.35; // 完整度跌破此值触发撤退（边沿触发，见 retreatNeeded）
+const FIRE_FRESHNESS = 0.6; // 目标失联超此时长不许开火（防隔墙射击；感知每 0.2s 刷新）
 
 // ---------- 路径点图 ----------
 // 沿街道/广场/巷道/房门口手放，边由“距离 + 净空检测”自动生成：
@@ -161,6 +171,76 @@ function nearestNode(nodes, x, z) {
   return best;
 }
 
+// 从某节点出发的 BFS 可达集合（包抄目的地筛选：一次 BFS 供全部候选点复用）。
+function reachableSet(adj, from) {
+  const seen = new Set([from]);
+  const queue = [from];
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    for (const nb of adj[cur]) {
+      if (!seen.has(nb)) {
+        seen.add(nb);
+        queue.push(nb);
+      }
+    }
+  }
+  return seen;
+}
+
+// ---------- 掩体点 ----------
+// 开局从碰撞体预计算一次：每个“够高够宽”的障碍物（矮墙/木箱/路障/
+// 沙袋/汽车/垃圾箱/花坛/房间墙体）四周生成站位点，机器人交战/撤退时
+// 就近选用。点位本身不保证有效——是否真能挡住某个敌人的视线，由
+// 决策时用现有 LOS 射线现测（findCover），不预计算（敌人位置每帧在变）。
+// reservedBy：同一掩体点只许一名机器人占用，避免全队挤一个木箱后。
+const COVER_MIN_TOP = 0.9;
+const COVER_STANDOFF = 0.95; // 站位点离障碍物表面的距离（机器人半径 0.4 + 余量）
+function buildCoverPoints(colliders, graph) {
+  const points = [];
+  let id = 0;
+  const tryAdd = (x, z, cx, cz, top) => {
+    if (Math.abs(x) > 43 || Math.abs(z) > 43) return;
+    if (pointBlocked(colliders, x, z, 0.4)) return;
+    // 可达性：离某个路径点 ≤4m，或与最近路径点之间无高大障碍物——
+    // 否则点在房间深处/墙后，机器人走不过去还会被卡住检测反复折腾。
+    const nn = nearestNode(graph.nodes, x, z);
+    const nd = Math.hypot(graph.nodes[nn].x - x, graph.nodes[nn].z - z);
+    if (nd > 4 && !segmentClear(colliders, graph.nodes[nn].x, graph.nodes[nn].z, x, z, 0.4, 1.4, true)) return;
+    points.push({ id: id++, x, z, cx, cz, top, reservedBy: null });
+  };
+  for (const c of colliders) {
+    const top = c.top ?? 99;
+    if (top < COVER_MIN_TOP) continue;
+    if (c.type === 'aabb') {
+      const w = c.maxX - c.minX;
+      const d = c.maxZ - c.minZ;
+      if (Math.min(w, d) < 0.4) continue;
+      const cx = (c.minX + c.maxX) / 2;
+      const cz = (c.minZ + c.maxZ) / 2;
+      // 每面沿边长每 ~2.5m 一个点
+      const nx = Math.max(1, Math.round(w / 2.5));
+      const nz = Math.max(1, Math.round(d / 2.5));
+      for (let i = 0; i < nx; i++) {
+        const x = c.minX + ((i + 0.5) / nx) * w;
+        tryAdd(x, c.minZ - COVER_STANDOFF, cx, cz, top);
+        tryAdd(x, c.maxZ + COVER_STANDOFF, cx, cz, top);
+      }
+      for (let i = 0; i < nz; i++) {
+        const z = c.minZ + ((i + 0.5) / nz) * d;
+        tryAdd(c.minX - COVER_STANDOFF, z, cx, cz, top);
+        tryAdd(c.maxX + COVER_STANDOFF, z, cx, cz, top);
+      }
+    } else if (c.type === 'circle') {
+      if (c.r < 0.4) continue;
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2;
+        tryAdd(c.x + Math.cos(a) * (c.r + COVER_STANDOFF), c.z + Math.sin(a) * (c.r + COVER_STANDOFF), c.x, c.z, top);
+      }
+    }
+  }
+  return points;
+}
+
 // 机器人开火命中率：距离越远越低，目标/自身移动再打折。
 function hitChance(dist, targetSpeed, shooterMoving) {
   let p;
@@ -201,11 +281,13 @@ export function createBotManager({
   } = callbacks;
 
   const graph = buildGraph(colliders);
+  const coverPoints = buildCoverPoints(colliders, graph);
   const bots = [];
   const hitMeshes = [];
   const botColliders = [];
   const raycaster = new THREE.Raycaster();
   let combatEnabled = true;
+  let coordT = 0; // 小队角色分配节流计时（1s 一次）
 
   // ---------- 队伍出生点 ----------
   const SPAWNS = {
@@ -404,6 +486,28 @@ export function createBotManager({
       respawnT: 0,
       bobT: Math.random() * 10,
       fallT: 0,
+      // 战术状态（v0.14）：掩体/包抄/撤退/包扎，见 update 里的决策分支。
+      // state 扩展：patrol | engage | retreat | bandage | dead；包抄/搜寻
+      // 是 engage 内的子模式（role / hunting），不另开状态。
+      role: null, // 'pin' 牵制 | 'flank' 包抄 | null
+      flankDest: null, // {x, z} 包抄目的地
+      flankTargetKey: null,
+      flankArrived: false,
+      flankAnchor: null, // {x, z} 指派包抄时目标的位置；目标跑远即过期重评
+      cover: null, // { point, phase: 'hidden'|'peek', phaseT, peekSide, peekPos, staleT, fired }
+      coverDecideT: 0,
+      hunting: false, // 目标失联后向最后已知位置迂回搜寻中
+      retreatDest: null, // {x, z, point} 撤退目的地（point 为占用的掩体点或 null）
+      retreatThreat: null, // 撤退时面对的威胁位置（包扎时朝向用）
+      bandageT: 0,
+      bandageInterrupts: 0,
+      bandageSeq: 0,
+      hitSeq: 0, // 累计受击次数（包扎打断检测用）
+      prevMinI: 1, // 上一帧的最低部位完整度（撤退边沿触发用）
+      lastRetreatDestroyed: 0, // 上次撤退时已损毁的模块数（新损毁触发用）
+      retreatCooldownUntil: 0,
+      reloadMove: null, // 换弹前先跑到的掩体点（占用中）
+      alertCover: null, // 巡逻受袭后先去的掩体点（占用中）
     };
     for (const m of botMeshes) m.userData.bot = bot;
     bots.push(bot);
@@ -411,6 +515,7 @@ export function createBotManager({
   }
 
   function resetBot(bot, spawnPoint) {
+    releaseTactical(bot); // 先释放上一条命占用的掩体点，再复位字段
     bot.integrity = { head: 1, chest: 1, abdomen: 1, arm: 1, leg: 1 };
     bot.destroyed.clear();
     bot.gear = createGearState();
@@ -430,6 +535,25 @@ export function createBotManager({
     bot.hitT = 0;
     bot.deathT = 0;
     bot.fallT = 0;
+    bot.role = null;
+    bot.flankDest = null;
+    bot.flankTargetKey = null;
+    bot.flankArrived = false;
+    bot.flankAnchor = null;
+    bot.cover = null;
+    bot.coverDecideT = 0;
+    bot.hunting = false;
+    bot.retreatDest = null;
+    bot.retreatThreat = null;
+    bot.bandageT = 0;
+    bot.bandageInterrupts = 0;
+    bot.bandageSeq = 0;
+    bot.hitSeq = 0;
+    bot.prevMinI = 1;
+    bot.lastRetreatDestroyed = 0;
+    bot.retreatCooldownUntil = 0;
+    bot.reloadMove = null;
+    bot.alertCover = null;
     bot.group.visible = true;
     bot.group.rotation.x = 0;
     bot.group.rotation.y = 0;
@@ -525,6 +649,7 @@ export function createBotManager({
 
   function killBot(bot, killer) {
     if (!bot.alive) return;
+    releaseTactical(bot); // 倒地即释放掩体占用，队友可以接手这个点
     bot.alive = false;
     bot.state = 'dead';
     bot.deathT = 0;
@@ -561,6 +686,7 @@ export function createBotManager({
       return { log: `命中${evalResult.zoneLabel}（目标已倒地）`, killed: false, zoneLabel: evalResult.zoneLabel };
     }
     bot.hitT = 0.45; // 受击 clip 0.62s：0.3s 切走会把反应动作拦腰截断，看着抽搐
+    bot.hitSeq += 1; // 包扎打断检测：包扎期间 hitSeq 变化即被打断
     bot.lastAttacker = attacker || null;
     bot.lastAttackerT = performance.now() / 1000;
     const gearRes = applyGearHit(bot.gear, zone, evalResult.severity * damageScale, Math.random());
@@ -588,10 +714,20 @@ export function createBotManager({
       const bleedRoll = rollBleed(bot.bleed, zone, Math.random());
       if (bleedRoll.triggered && !bleedRoll.refreshed) log += ` —— ${evalResult.zoneLabel}失血！`;
     }
-    // 受伤即转火：正在巡逻的机器人立刻注意到攻击者方向
+    // 受伤即转火：正在巡逻的机器人立刻注意到攻击者方向，并就近找掩体
+    // （v0.14：挨打不再站着发呆——先缩到掩体后再感知还击）。
     if (bot.state === 'patrol' && attacker) {
       bot.lastKnownT = performance.now() / 1000;
-      if (attacker.pos) bot.lastKnown.copy(attacker.pos);
+      if (attacker.pos) {
+        bot.lastKnown.copy(attacker.pos);
+        if (!bot.alertCover) {
+          const p = findCover(bot, attacker.pos, 12, 'hide');
+          if (p) {
+            p.reservedBy = bot.id;
+            bot.alertCover = p;
+          }
+        }
+      }
     }
     if (killed) killBot(bot, attacker);
     return { log, killed, zoneLabel: evalResult.zoneLabel };
@@ -617,6 +753,369 @@ export function createBotManager({
     return 'leg';
   }
 
+  // ---------- 战术辅助（v0.14） ----------
+  const _losFrom = new THREE.Vector3();
+  const _losTo = new THREE.Vector3();
+  // 两点之间视线是否被挡（复用 hasLineOfSight 的射线；太近时不存在掩体）。
+  function losBlocked(fx, fz, tx, tz) {
+    if (Math.hypot(tx - fx, tz - fz) < 1) return false;
+    _losFrom.set(fx, 0, fz);
+    _losTo.set(tx, 0, tz);
+    return !hasLineOfSight(_losFrom, _losTo);
+  }
+
+  function releasePoint(p, bot) {
+    if (p && p.reservedBy === bot.id) p.reservedBy = null;
+  }
+  function releaseCover(bot) {
+    if (bot.cover) {
+      releasePoint(bot.cover.point, bot);
+      bot.cover = null;
+    }
+  }
+  // 释放一条命占用的全部战术资源（死亡/重生/撤退时调用，防占用泄漏）。
+  function releaseTactical(bot) {
+    releaseCover(bot);
+    if (bot.alertCover) {
+      releasePoint(bot.alertCover, bot);
+      bot.alertCover = null;
+    }
+    if (bot.reloadMove) {
+      releasePoint(bot.reloadMove, bot);
+      bot.reloadMove = null;
+    }
+    if (bot.retreatDest && bot.retreatDest.point) releasePoint(bot.retreatDest.point, bot);
+    bot.retreatDest = null;
+    bot.retreatThreat = null;
+    bot.role = null;
+    bot.flankDest = null;
+    bot.flankTargetKey = null;
+    bot.flankArrived = false;
+    bot.flankAnchor = null;
+  }
+
+  // 探头位：从掩体点向“掩体→敌人”连线的垂直方向偏移，探出去必须能
+  // 看见敌人（否则探头白搭）。两侧都试，返回第一个可行的位置与方向。
+  function pickPeek(cv, tx, tz) {
+    const px = cv.point.x;
+    const pz = cv.point.z;
+    const dx = tx - px;
+    const dz = tz - pz;
+    const d = Math.hypot(dx, dz) || 1;
+    const perpX = -dz / d;
+    const perpZ = dx / d;
+    const sides = cv.peekSide >= 0 ? [1, -1] : [-1, 1];
+    for (const side of sides) {
+      // 1.6/2.2m 探不出长墙的墙角时再试 3.0m（仍需空地 + 通视验证）
+      for (const off of [1.6, 2.2, 3.0]) {
+        const x = px + perpX * side * off;
+        const z = pz + perpZ * side * off;
+        if (Math.abs(x) > 43 || Math.abs(z) > 43) continue;
+        if (pointBlocked(colliders, x, z, 0.4)) continue;
+        if (losBlocked(x, z, tx, tz)) continue;
+        return { pos: new THREE.Vector3(x, 0, z), side };
+      }
+    }
+    return null;
+  }
+  function peekSideWorks(p, threatPos) {
+    return !!pickPeek({ point: p, peekSide: 1 }, threatPos.x, threatPos.z);
+  }
+
+  // 找掩体：离机器人最近的候选点中，挑一个“敌人看不见它”的点。
+  // mode 'fight' 还要求至少一侧能探头开火；'hide' 只要求藏得住（撤退/
+  // 包扎/换弹用）。验证次数封顶 8 次，决策节流 0.5s，不增加逐帧射线。
+  // trace（可选，调试用）：记录候选点在各道关卡的淘汰数。
+  function findCover(bot, threatPos, maxDist, mode, trace) {
+    const bx = bot.group.position.x;
+    const bz = bot.group.position.z;
+    const cands = [];
+    for (const p of coverPoints) {
+      if (p.reservedBy && p.reservedBy !== bot.id) continue;
+      const d = Math.hypot(p.x - bx, p.z - bz);
+      if (d > maxDist) continue;
+      cands.push({ p, d });
+    }
+    if (trace) trace.cands = cands.length;
+    // 高掩体（墙/围栏/车辆，top ≥ 1.4m）优先：站姿胸线射线只有它们
+    // 挡得住；矮箱子/路障的点排在后面，避免 8 个名额全耗在注定无效
+    // 的矮掩体上。同类内仍按距离排序（就近找掩体）。
+    cands.sort((a, b) => ((b.p.top >= 1.4) - (a.p.top >= 1.4)) || (a.d - b.d));
+    let checked = 0;
+    for (const { p } of cands) {
+      if (checked >= 12) break;
+      // 可达：与机器人之间无高大障碍物（矮道具靠 moveToward 临场绕开）
+      if (!segmentClear(colliders, bx, bz, p.x, p.z, 0.4, 1.4, true)) {
+        if (trace) trace.segFail++;
+        continue;
+      }
+      checked++;
+      if (!losBlocked(threatPos.x, threatPos.z, p.x, p.z)) {
+        if (trace) trace.losFail++;
+        continue;
+      }
+      if (mode === 'fight' && !peekSideWorks(p, threatPos)) {
+        if (trace) trace.peekFail++;
+        continue;
+      }
+      if (trace) trace.checked = checked;
+      return p;
+    }
+    if (trace) trace.checked = checked;
+    return null;
+  }
+
+  // 掩体决策（节流调用）：已有掩体先验证是否仍有效（敌人绕过来/战线
+  // 转移就放弃），没有则就近找一个。太远（>35m）先靠近，不找掩体。
+  // 包抄途中的机器人不找掩体——先到位，掩体到位后再说。
+  function decideCover(bot, tx, tz, tDist) {
+    if (bot.role === 'flank' && bot.flankDest && !bot.flankArrived) {
+      releaseCover(bot);
+      return;
+    }
+    if (bot.cover) {
+      const cv = bot.cover;
+      const dThreat = Math.hypot(cv.point.x - tx, cv.point.z - tz);
+      const dBot = Math.hypot(cv.point.x - bot.group.position.x, cv.point.z - bot.group.position.z);
+      if (dThreat > 35 || dBot > 18) {
+        releaseCover(bot);
+      } else if (cv.phase === 'hidden' && !losBlocked(tx, tz, cv.point.x, cv.point.z)) {
+        releaseCover(bot); // 敌人已经能看见掩体点，这个点废了
+      } else {
+        return; // 掩体仍有效，保持
+      }
+    }
+    if (tDist > 35) return;
+    const p = findCover(bot, { x: tx, z: tz }, 14, 'fight');
+    if (p) {
+      p.reservedBy = bot.id;
+      bot.cover = {
+        point: p,
+        phase: 'hidden',
+        phaseT: 0.3 + Math.random() * 0.4,
+        peekSide: Math.random() < 0.5 ? -1 : 1,
+        peekPos: null,
+        staleT: 0,
+        fired: false,
+      };
+    }
+  }
+
+  // 当前威胁的实时位置：目标 > 最后已知位置 > 无。
+  function threatPosOf(bot, player) {
+    if (bot.target) {
+      if (bot.target.kind === 'player') return player.alive ? player.pos : null;
+      if (bot.target.bot.alive) return bot.target.bot.group.position;
+    }
+    if (bot.lastKnownT > 0) return bot.lastKnown;
+    return null;
+  }
+
+  // 撤退触发（边沿触发，不用水平触发——完整度只降不升，水平触发会让
+  // 残血机器人包扎完 8 秒又撤退，整场反复横跳）：
+  // - 2 处以上失血（包扎能修好，修好后需重新挨打才再触发）；
+  // - 最低完整度本帧跌破 35%（prevMinI 是上一帧的值）；
+  // - 完整度已 <20% 且正在挨打（3s 内受过伤）；
+  // - 新损毁一个模块且正在挨打（5s 内受过伤）。
+  function retreatNeeded(bot, now, minI) {
+    const bleeds = bleedingZones(bot.bleed).length;
+    if (bleeds >= 2) return true;
+    if (bot.prevMinI >= RETREAT_INTEGRITY && minI < RETREAT_INTEGRITY) return true;
+    if (minI < 0.2 && now - bot.lastAttackerT < 3) return true;
+    if (bot.destroyed.size > bot.lastRetreatDestroyed && now - bot.lastAttackerT < 5) return true;
+    return false;
+  }
+
+  function startRetreat(bot, now, player) {
+    releaseTactical(bot);
+    bot.lastRetreatDestroyed = bot.destroyed.size;
+    const threat = threatPosOf(bot, player);
+    bot.retreatThreat = threat ? new THREE.Vector3(threat.x, 0, threat.z) : null;
+    let dest = null;
+    if (threat) dest = findCover(bot, threat, 20, 'hide');
+    if (dest) {
+      dest.reservedBy = bot.id;
+      bot.retreatDest = { x: dest.x, z: dest.z, point: dest };
+    } else {
+      // 无可用掩体：退向己方半场——离威胁远、离出生侧近的路径点。
+      const homeZ = bot.team === 'blue' ? 40 : -40;
+      let bestNode = null;
+      let bestScore = -Infinity;
+      for (const n of graph.nodes) {
+        const dBot = Math.hypot(n.x - bot.group.position.x, n.z - bot.group.position.z);
+        if (dBot < 3) continue;
+        const dHome = Math.hypot(n.x, n.z - homeZ);
+        const dThreat = threat ? Math.hypot(n.x - threat.x, n.z - threat.z) : 0;
+        const score = dThreat - dHome * 0.5 - dBot * 0.2;
+        if (score > bestScore) {
+          bestScore = score;
+          bestNode = n;
+        }
+      }
+      bot.retreatDest = bestNode ? { x: bestNode.x, z: bestNode.z, point: null } : null;
+    }
+    bot.state = 'retreat';
+    bot.burstLeft = 0;
+  }
+
+  function endRetreat(bot, now, cooldown) {
+    if (bot.retreatDest && bot.retreatDest.point) releasePoint(bot.retreatDest.point, bot);
+    bot.retreatDest = null;
+    bot.retreatThreat = null;
+    bot.retreatCooldownUntil = now + cooldown;
+    bot.bandageT = 0;
+    if (bot.target && bot.target.kind === 'bot' && !bot.target.bot.alive) bot.target = null;
+    bot.state = bot.target ? 'engage' : 'patrol';
+    if (bot.state === 'patrol') pickDestination(bot);
+    else bot.coverDecideT = 0; // 重返交战立刻找掩体
+  }
+
+  // 包抄目的地：与牵制者-目标连线的夹角 >60°、离目标 10~35m、且 BFS
+  // 可达的路径点/掩体点；角度越大、离自己越近越好。
+  function findFlankDest(bot, tPos, pinPos) {
+    const ax = pinPos.x - tPos.x;
+    const az = pinPos.z - tPos.z;
+    const aLen = Math.hypot(ax, az) || 1;
+    const from = nearestNode(graph.nodes, bot.group.position.x, bot.group.position.z);
+    const reach = reachableSet(graph.adj, from);
+    let best = null;
+    const considerDest = (x, z) => {
+      const dx = x - tPos.x;
+      const dz = z - tPos.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 10 || d > 35) return;
+      const cosA = (ax * dx + az * dz) / (aLen * d);
+      const angle = Math.acos(THREE.MathUtils.clamp(cosA, -1, 1));
+      if (angle < Math.PI / 3) return;
+      if (!reach.has(nearestNode(graph.nodes, x, z))) return;
+      const dBot = Math.hypot(x - bot.group.position.x, z - bot.group.position.z);
+      if (dBot > 30) return; // 太远的包抄位没有意义：到位前战斗早结束了
+      // 夹角优先，但路程惩罚要够重：36m 外的 173° 不如 15m 外的 90°。
+      const score = angle - dBot * 0.07;
+      if (!best || score > best.score) best = { x, z, angle, score };
+    };
+    for (const n of graph.nodes) considerDest(n.x, n.z);
+    for (const p of coverPoints) {
+      if (p.reservedBy && p.reservedBy !== bot.id) continue;
+      considerDest(p.x, p.z);
+    }
+    return best;
+  }
+
+  // 小队角色分配（1s 一次）：同一目标有 2 名以上队友在打时，最近的牵制
+  // （pin，正面施压），再挑一名包抄（flank，绕侧）；每目标最多一名包抄。
+  // 目标死亡/更换、包抄者阵亡时重新评估；角色只影响走位，不改数值。
+  function coordinateRoles(player) {
+    const keyOf = (b) => (b.target.kind === 'player' ? 'player' : 'bot:' + b.target.bot.id);
+    const livePosOf = (b) => {
+      if (b.target.kind === 'player') return player.alive ? player.pos : null;
+      return b.target.bot.alive ? b.target.bot.group.position : null;
+    };
+    for (const team of ['blue', 'red']) {
+      const engagers = bots.filter((b) => b.alive && b.team === team && b.state === 'engage' && b.target);
+      const groups = new Map();
+      for (const b of engagers) {
+        const k = keyOf(b);
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(b);
+      }
+      // 目标已换的包抄者卸任（新目标重新评估）；目标跑远（>12m）则
+      // 包抄目的地过期，同样卸任重评——否则包抄者永远追不上战线。
+      for (const b of engagers) {
+        if (b.role === 'flank' && b.flankTargetKey !== keyOf(b)) {
+          b.role = null;
+          b.flankDest = null;
+          b.flankArrived = false;
+          b.flankAnchor = null;
+        } else if (b.role === 'flank' && b.flankAnchor) {
+          const tp = livePosOf(b);
+          if (tp && Math.hypot(tp.x - b.flankAnchor.x, tp.z - b.flankAnchor.z) > 12) {
+            b.role = null;
+            b.flankDest = null;
+            b.flankArrived = false;
+            b.flankAnchor = null;
+          }
+        }
+      }
+      for (const [key, group] of groups) {
+        if (group.length < 2) continue;
+        const tPos = livePosOf(group[0]);
+        if (!tPos) continue;
+        // 角色粘性：已有的牵制/包抄不轻易换人。按“最近者当牵制”每秒重
+        // 选会换位震荡——包抄者跑近目标就变成最近者、被改任牵制丢掉目
+        // 的地，两人反复换位谁也到不了位（实测）。只在空缺时补选。
+        let pin = group.find((b) => b.role === 'pin');
+        if (!pin) {
+          group.sort(
+            (a, b) =>
+              Math.hypot(a.group.position.x - tPos.x, a.group.position.z - tPos.z) -
+              Math.hypot(b.group.position.x - tPos.x, b.group.position.z - tPos.z)
+          );
+          pin = group[0];
+          if (pin.role === 'flank') {
+            pin.flankDest = null;
+            pin.flankArrived = false;
+            pin.flankAnchor = null;
+          }
+          pin.role = 'pin';
+        }
+        let flanker = group.find((b) => b !== pin && b.role === 'flank' && b.flankTargetKey === key);
+        if (!flanker) {
+          let bestBot = null;
+          let bestDest = null;
+          for (const b of group) {
+            if (b === pin) continue;
+            if (b.flankArrived) continue; // 刚包抄到位，先打仗，不立刻再派
+            const dest = findFlankDest(b, tPos, pin.group.position);
+            if (dest && (!bestDest || dest.score > bestDest.score)) {
+              bestBot = b;
+              bestDest = dest;
+            }
+          }
+          if (bestBot) {
+            flanker = bestBot;
+            flanker.role = 'flank';
+            flanker.flankTargetKey = key;
+            flanker.flankDest = { x: bestDest.x, z: bestDest.z };
+            flanker.flankArrived = false;
+            flanker.flankAnchor = { x: tPos.x, z: tPos.z };
+            releaseCover(flanker); // 包抄先动身，掩体到位后再找
+          }
+        }
+        for (const b of group) {
+          if (b !== pin && b !== flanker && b.role !== null) {
+            b.role = null;
+            b.flankDest = null;
+            b.flankArrived = false;
+            b.flankAnchor = null;
+          }
+        }
+      }
+      for (const b of engagers) {
+        if (b.role === 'pin') {
+          const g = groups.get(keyOf(b));
+          if (!g || g.length < 2) b.role = null;
+        }
+      }
+    }
+  }
+
+  // 沿路径点向目标推进（交战接近/迂回搜寻/包抄/撤退共用）：先 BFS 到
+  // 目标最近节点，同一节点内直接走。faceMove=false 时脸留在敌人身上。
+  function routeViaWaypoints(bot, tx, tz, speed, dt, faceMove = true) {
+    const destNode = nearestNode(graph.nodes, tx, tz);
+    const fromNode = nearestNode(graph.nodes, bot.group.position.x, bot.group.position.z);
+    if (fromNode !== destNode) {
+      const path = bfsPath(graph.adj, fromNode, destNode);
+      if (path && path.length > 1) {
+        const wp = graph.nodes[path[1]];
+        moveToward(bot, wp.x, wp.z, easeSpeed(bot, speed, dt), dt, faceMove);
+        return false;
+      }
+    }
+    return moveToward(bot, tx, tz, easeSpeed(bot, speed, dt), dt, faceMove);
+  }
+
   // ---------- 感知 ----------
   const _eye = new THREE.Vector3();
   const _chest = new THREE.Vector3();
@@ -636,14 +1135,13 @@ export function createBotManager({
   }
 
   function perceive(bot, now, player) {
-    // 候选：玩家 + 敌方机器人
-    let best = null;
-    let bestDist = Infinity;
+    // 候选：玩家 + 敌方机器人（全部过一遍，供目标分配挑选）。
+    const candidates = [];
     const consider = (kind, obj, pos) => {
       const dx = pos.x - bot.group.position.x;
       const dz = pos.z - bot.group.position.z;
       const dist = Math.hypot(dx, dz);
-      if (dist > SIGHT_RANGE || dist >= bestDist) return;
+      if (dist > SIGHT_RANGE) return;
       // 视野角：正前方 110°；刚受过伤（3s 内）或极近（8m 内）则 360°
       const recentDamage = now - bot.lastAttackerT < 3;
       if (!recentDamage && dist > 8) {
@@ -653,8 +1151,7 @@ export function createBotManager({
         if (Math.acos(Math.min(1, Math.max(-1, cosA))) > SIGHT_HALF_FOV) return;
       }
       if (!hasLineOfSight(bot.group.position, pos)) return;
-      best = { kind, obj, dist };
-      bestDist = dist;
+      candidates.push({ kind, obj, dist, key: kind === 'player' ? 'player' : 'bot:' + obj.id });
     };
     // 玩家是蓝队：只有红队机器人把玩家当目标（蓝队队友不打自己人）。
     if (player.alive && bot.team === 'red') consider('player', null, player.pos);
@@ -662,7 +1159,16 @@ export function createBotManager({
       if (other === bot || !other.alive || other.team === bot.team) continue;
       consider('bot', other, other.group.position);
     }
-    if (best) {
+    if (candidates.length > 0) {
+      // 目标分配（v0.14）：优先选没有队友在打的敌人，避免全队集火
+      // 一个人、放着其他敌人不管；实在都有人打了就选最近的。
+      const engagedKeys = new Set();
+      for (const other of bots) {
+        if (other === bot || !other.alive || other.team !== bot.team || !other.target) continue;
+        engagedKeys.add(other.target.kind === 'player' ? 'player' : 'bot:' + other.target.bot.id);
+      }
+      candidates.sort((a, b) => a.dist - b.dist);
+      const best = candidates.find((c) => !engagedKeys.has(c.key)) || candidates[0];
       const newTarget = best.kind === 'player' ? { kind: 'player' } : { kind: 'bot', bot: best.obj };
       const changed = !bot.target || bot.target.kind !== newTarget.kind ||
         (newTarget.kind === 'bot' && bot.target.bot !== newTarget.bot);
@@ -671,17 +1177,36 @@ export function createBotManager({
         bot.reactionT = 0.5 + Math.random() * 0.4;
         bot.strafeAnchor.copy(bot.group.position);
         bot.strafeT = 0;
+        // 换目标了：旧掩体是冲旧目标找的，下一决策 tick 重新评估
+        if (bot.cover) bot.coverDecideT = 0.2;
       }
       bot.targetLostT = 0;
+      bot.hunting = false;
       bot.lastKnown.copy(best.kind === 'player' ? player.pos : best.obj.group.position);
       bot.lastKnownT = now;
-      if (bot.state !== 'engage') bot.state = 'engage';
+      // 有活目标就不再需要受袭掩体（交战掩体决策接手）
+      if (bot.alertCover) {
+        releasePoint(bot.alertCover, bot);
+        bot.alertCover = null;
+      }
+      // 只从巡逻转入交战：撤退/包扎中的机器人不被感知拽回战场
+      if (bot.state === 'patrol') bot.state = 'engage';
     } else if (bot.target) {
-      bot.targetLostT += PERCEPT_INTERVAL;
-      if (bot.targetLostT > 2.5) {
+      // 藏身掩体后时目标短暂不可见是正常的：冻结丢失计时（探头周期内
+      // 不丢目标）；但藏超过 6s 目标早走了，放弃掩体重新感知。
+      if (bot.cover && bot.cover.phase === 'hidden') {
+        bot.targetLostT = Math.min(bot.targetLostT, 0.5);
+        bot.cover.staleT += PERCEPT_INTERVAL;
+        if (bot.cover.staleT > 6) releaseCover(bot);
+      } else {
+        bot.targetLostT += PERCEPT_INTERVAL;
+        if (bot.cover) bot.cover.staleT = 0;
+      }
+      if (bot.targetLostT > 2.5 && bot.state === 'engage') {
         bot.target = null;
         bot.state = 'patrol';
         bot.burstLeft = 0;
+        bot.hunting = false;
         pickDestination(bot);
       }
     }
@@ -829,6 +1354,12 @@ export function createBotManager({
   // ---------- 主更新 ----------
   function update(dt, now, player, mods) {
     // mods: { blue: {bleedFactor, speedFactor}, red: {...} } 背水一战增益
+    // 小队角色分配（1s 一次）：牵制/包抄只在交战中评估
+    coordT += dt;
+    if (coordT >= 1.0) {
+      coordT = 0;
+      if (combatEnabled) coordinateRoles(player);
+    }
     for (const bot of bots) {
       // 命中闪红衰减
       for (const m of bot.meshes) {
@@ -876,13 +1407,28 @@ export function createBotManager({
       }
       if (bot.hitT > 0) bot.hitT -= dt;
 
+      // 撤退判定（v0.14）：边沿触发，见 retreatNeeded；包扎完冷却期内不重复触发。
+      const minI = Math.min(
+        bot.integrity.head, bot.integrity.chest, bot.integrity.abdomen, bot.integrity.arm, bot.integrity.leg
+      );
+      if (
+        combatEnabled &&
+        (bot.state === 'engage' || bot.state === 'patrol') &&
+        now > bot.retreatCooldownUntil &&
+        retreatNeeded(bot, now, minI)
+      ) {
+        startRetreat(bot, now, player);
+      }
+      bot.prevMinI = minI;
+
       // 感知（错峰）与交战决策
       bot.perceptT += dt;
       if (combatEnabled && bot.perceptT >= PERCEPT_INTERVAL) {
         bot.perceptT = Math.random() * 0.05;
         perceive(bot, now, player);
       }
-      if (!combatEnabled && bot.state === 'engage') {
+      if (!combatEnabled && bot.state !== 'patrol' && bot.state !== 'dead') {
+        releaseTactical(bot);
         bot.state = 'patrol';
         bot.target = null;
         bot.burstLeft = 0;
@@ -899,7 +1445,42 @@ export function createBotManager({
       let moving = false;
       bot.strafing = false;
 
-      if (bot.state === 'engage' && bot.target && combatEnabled) {
+      // ---------- 状态机：撤退 / 包扎 / 交战 / 巡逻 ----------
+      if (bot.state === 'retreat') {
+        // 撤退：向掩体/己方半场跑，不开火，面朝移动方向（逃离姿态）。
+        if (bot.retreatDest) {
+          routeViaWaypoints(bot, bot.retreatDest.x, bot.retreatDest.z, engageSpeed, dt, true);
+          moving = true;
+          const dDest = Math.hypot(bot.group.position.x - bot.retreatDest.x, bot.group.position.z - bot.retreatDest.z);
+          if (dDest < 1.0) {
+            bot.state = 'bandage';
+            bot.bandageT = 0;
+            bot.bandageSeq = bot.hitSeq;
+            bot.bandageInterrupts = 0;
+          }
+        } else {
+          bot.state = 'bandage';
+          bot.bandageT = 0;
+          bot.bandageSeq = bot.hitSeq;
+          bot.bandageInterrupts = 0;
+        }
+      } else if (bot.state === 'bandage') {
+        // 包扎：静止 2.5s 止住全部失血（与玩家同一时长与规则）；挨打即
+        // 打断（hitSeq 变化），打断两次就不再坚持，带伤重返战场。
+        if (bot.retreatThreat) faceToward(bot, bot.retreatThreat.x, bot.retreatThreat.z, dt);
+        if (bot.hitSeq !== bot.bandageSeq) {
+          bot.bandageInterrupts += 1;
+          bot.bandageT = 0;
+          bot.bandageSeq = bot.hitSeq;
+          if (bot.bandageInterrupts >= 2) endRetreat(bot, now, 10);
+        } else {
+          bot.bandageT += dt;
+          if (bot.bandageT >= BOT_BANDAGE_TIME) {
+            clearBleeds(bot.bleed);
+            endRetreat(bot, now, 8);
+          }
+        }
+      } else if (bot.state === 'engage' && bot.target && combatEnabled) {
         // 目标位置
         let tx, tz, tDist;
         if (bot.target.kind === 'player') {
@@ -914,21 +1495,88 @@ export function createBotManager({
 
         // 反应延迟过后才开火
         if (bot.reactionT > 0) bot.reactionT -= dt;
+
+        // 掩体决策（节流）：已有掩体先验证有效性，没有则就近找
+        bot.coverDecideT -= dt;
+        if (bot.coverDecideT <= 0) {
+          bot.coverDecideT = 0.5 + Math.random() * 0.3;
+          decideCover(bot, tx, tz, tDist);
+        }
+
+        // 开火门控：目标失联超 0.6s 不许隔墙开火（掩体必须真能挡子弹）；
+        // 藏身掩体后不射击；包抄途中远离目标时不射击（到位前不暴露）。
+        let fireSuppressed = bot.targetLostT > FIRE_FRESHNESS;
+        const flanking = bot.role === 'flank' && bot.flankDest && !bot.flankArrived;
+        if (flanking && tDist >= 12) fireSuppressed = true;
+
+        // 掩体探头相位推进（移动在走位段执行）
+        if (bot.cover) {
+          const cv = bot.cover;
+          if (cv.phase === 'hidden') {
+            fireSuppressed = true;
+            cv.phaseT -= dt;
+            if (cv.phaseT <= 0) {
+              const peek = pickPeek(cv, tx, tz);
+              if (peek) {
+                cv.phase = 'peek';
+                cv.phaseT = 1.6;
+                cv.peekPos = peek.pos;
+                cv.peekSide = peek.side;
+                cv.fired = false;
+              } else {
+                releaseCover(bot); // 两侧都探不出去，这个掩体打不了仗
+              }
+            }
+          } else {
+            cv.phaseT -= dt;
+            if (cv.phaseT <= 0 || (cv.fired && bot.burstLeft === 0 && bot.pauseT > 0)) {
+              cv.phase = 'hidden';
+              cv.phaseT = 0.4 + Math.random() * 0.5; // 缩回时长随机，不机械
+              cv.peekSide *= -1; // 下次换另一侧探头
+              cv.fired = false;
+              // 缩回时验证掩体仍有效（敌人可能已绕到侧面）
+              if (!losBlocked(tx, tz, cv.point.x, cv.point.z)) releaseCover(bot);
+            }
+          }
+        }
+
+        // 换弹前先找掩体：弹仓打空时若 6m 内有掩体，先跑过去再换弹
+        if (bot.reloadMove) {
+          fireSuppressed = true;
+          const rp = bot.reloadMove;
+          if (moveToward(bot, rp.x, rp.z, easeSpeed(bot, engageSpeed, dt), dt, false)) {
+            bot.reloadT = 1.8;
+            releasePoint(rp, bot);
+            bot.reloadMove = null;
+          }
+          moving = true;
+        }
+
         // 换弹
         if (bot.reloadT > 0) {
           bot.reloadT -= dt;
           if (bot.reloadT <= 0) bot.magLeft = 30;
-        } else if (bot.reactionT <= 0) {
+        } else if (bot.reactionT <= 0 && !fireSuppressed) {
           if (bot.burstLeft > 0) {
             bot.shotT -= dt;
             if (bot.shotT <= 0) {
               botShoot(bot, now, player);
+              if (bot.cover && bot.cover.phase === 'peek') bot.cover.fired = true;
               bot.magLeft -= 1;
               bot.burstLeft -= 1;
               bot.shotT = 0.11;
               if (bot.magLeft <= 0) {
-                bot.reloadT = 1.8;
                 bot.burstLeft = 0;
+                // 换弹纪律：已在掩体后就原地换，否则 6m 内有掩体先跑过去
+                const atCover = bot.cover &&
+                  Math.hypot(bot.cover.point.x - bot.group.position.x, bot.cover.point.z - bot.group.position.z) < 1.2;
+                const nearCover = atCover ? null : findCover(bot, { x: tx, z: tz }, 6, 'hide');
+                if (nearCover) {
+                  nearCover.reservedBy = bot.id;
+                  bot.reloadMove = nearCover;
+                } else {
+                  bot.reloadT = 1.8;
+                }
               } else if (bot.burstLeft <= 0) {
                 bot.pauseT = 0.45 + Math.random() * 0.4;
               }
@@ -941,47 +1589,78 @@ export function createBotManager({
           }
         }
 
-        // 走位：太远则向目标靠近（沿路径点），否则绕锚点横移
-        if (tDist > 35) {
-          const destNode = nearestNode(graph.nodes, tx, tz);
-          const fromNode = nearestNode(graph.nodes, bot.group.position.x, bot.group.position.z);
-          if (fromNode !== destNode) {
-            const path = bfsPath(graph.adj, fromNode, destNode);
-            if (path && path.length > 1) {
-              const wp = graph.nodes[path[1]];
-              moveToward(bot, wp.x, wp.z, easeSpeed(bot, engageSpeed, dt), dt);
-              moving = true;
-            }
-          } else {
-            moveToward(bot, tx, tz, easeSpeed(bot, engageSpeed, dt), dt);
+        // 走位（换弹跑位已在上面处理过）
+        if (bot.reloadMove) {
+          // 本帧已在换弹分支移动过，不再叠加走位
+        } else if (bot.cover) {
+          const cv = bot.cover;
+          if (cv.phase === 'hidden') {
+            // 藏身：跑到掩体点后，脸朝敌人等探头时机
+            moveToward(bot, cv.point.x, cv.point.z, easeSpeed(bot, engageSpeed, dt), dt, false);
             moving = true;
-          }
-        } else {
-          bot.strafeT += dt;
-          if (bot.strafeT > 1.2 + Math.random() * 0.8) {
-            bot.strafeT = 0;
-            bot.strafeDir *= -1;
-          }
-          // 横移目标：锚点 ± 垂直方向 1.5m，探障后取可行点
-          const fx = Math.sin(bot.yaw);
-          const fz = Math.cos(bot.yaw);
-          const px = -fz * bot.strafeDir * 1.5;
-          const pz = fx * bot.strafeDir * 1.5;
-          const sx = bot.strafeAnchor.x + px;
-          const sz = bot.strafeAnchor.z + pz;
-          if (!pointBlocked(colliders, sx, sz, 0.4)) {
-            // 横移：脸朝敌人（本帧开头 faceToward 已转好），不转向移动方向
-            moveToward(bot, sx, sz, easeSpeed(bot, engageSpeed * 0.7, dt), dt, false);
+          } else if (cv.peekPos) {
+            // 探头：侧移到探头位开火，脸始终朝敌人
+            moveToward(bot, cv.peekPos.x, cv.peekPos.z, easeSpeed(bot, engageSpeed * 0.7, dt), dt, false);
             moving = true;
             bot.strafing = true;
           }
-          // 锚点漂移：跟随目标慢慢前移，避免原地横移一整场
-          bot.strafeAnchor.x += (bot.group.position.x - bot.strafeAnchor.x) * Math.min(1, dt * 0.3);
-          bot.strafeAnchor.z += (bot.group.position.z - bot.strafeAnchor.z) * Math.min(1, dt * 0.3);
+          // 掩体战不设横移锚点：退出掩体时锚点就在脚下，横移从当前位置起
+          bot.strafeAnchor.copy(bot.group.position);
+        } else if (flanking) {
+          // 包抄：沿路径点跑向侧翼位置，到位后转回常规交战
+          routeViaWaypoints(bot, bot.flankDest.x, bot.flankDest.z, engageSpeed, dt, true);
+          moving = true;
+          if (Math.hypot(bot.group.position.x - bot.flankDest.x, bot.group.position.z - bot.flankDest.z) < 1.5) {
+            bot.flankArrived = true;
+            bot.role = null;
+            bot.flankDest = null;
+            bot.coverDecideT = 0; // 到位后立刻找掩体开火
+          }
+        } else if (bot.targetLostT > 0.5 && now - bot.lastKnownT < 8) {
+          // 目标失联：沿路径点向最后已知位置迂回搜寻，不再原地盯着墙
+          bot.hunting = true;
+          routeViaWaypoints(bot, bot.lastKnown.x, bot.lastKnown.z, engageSpeed, dt, true);
+          moving = true;
+        } else {
+          bot.hunting = false;
+          // 走位：太远则向目标靠近（沿路径点），否则绕锚点横移
+          if (tDist > 35) {
+            routeViaWaypoints(bot, tx, tz, engageSpeed, dt, true);
+            moving = true;
+          } else {
+            bot.strafeT += dt;
+            if (bot.strafeT > 1.2 + Math.random() * 0.8) {
+              bot.strafeT = 0;
+              bot.strafeDir *= -1;
+            }
+            // 横移目标：锚点 ± 垂直方向 1.5m，探障后取可行点
+            const fx = Math.sin(bot.yaw);
+            const fz = Math.cos(bot.yaw);
+            const px = -fz * bot.strafeDir * 1.5;
+            const pz = fx * bot.strafeDir * 1.5;
+            const sx = bot.strafeAnchor.x + px;
+            const sz = bot.strafeAnchor.z + pz;
+            if (!pointBlocked(colliders, sx, sz, 0.4)) {
+              // 横移：脸朝敌人（本帧开头 faceToward 已转好），不转向移动方向
+              moveToward(bot, sx, sz, easeSpeed(bot, engageSpeed * 0.7, dt), dt, false);
+              moving = true;
+              bot.strafing = true;
+            }
+            // 锚点漂移：跟随目标慢慢前移，避免原地横移一整场
+            bot.strafeAnchor.x += (bot.group.position.x - bot.strafeAnchor.x) * Math.min(1, dt * 0.3);
+            bot.strafeAnchor.z += (bot.group.position.z - bot.strafeAnchor.z) * Math.min(1, dt * 0.3);
+          }
         }
       } else {
-        // 巡逻：沿路径点移动，到达后随机选下一个
-        if (bot.idleT > 0) {
+        // 巡逻：受袭后先去掩体（alertCover），再沿路径点移动，到达后随机选下一个
+        if (bot.alertCover) {
+          const p = bot.alertCover;
+          if (moveToward(bot, p.x, p.z, easeSpeed(bot, patrolSpeed, dt), dt)) {
+            releasePoint(p, bot);
+            bot.alertCover = null;
+          }
+          moving = true;
+        } else if (bot.idleT > 0) {
           bot.idleT -= dt;
         } else if (bot.pathIdx < bot.path.length) {
           const wp = graph.nodes[bot.path[bot.pathIdx]];
@@ -1002,7 +1681,8 @@ export function createBotManager({
         }
       }
 
-      // 卡住检测：2s 内移动不足 0.3m → 换目标点
+      // 卡住检测：2s 内移动不足 0.3m → 换目标点；战术目标（掩体/包抄/
+      // 换弹跑位）走不过去就放弃，撤退走不过去就地包扎（总比站着强）。
       bot.stuckCheckT += dt;
       if (bot.stuckCheckT > 2) {
         bot.stuckCheckT = 0;
@@ -1011,23 +1691,49 @@ export function createBotManager({
           bot.stuckT += 1;
           pickDestination(bot);
           bot.strafeDir *= -1;
+          if (bot.cover) {
+            releaseCover(bot);
+            bot.coverDecideT = 1.5;
+          }
+          if (bot.reloadMove) {
+            releasePoint(bot.reloadMove, bot);
+            bot.reloadMove = null;
+            bot.reloadT = 1.8;
+          }
+          if (bot.role === 'flank') {
+            bot.role = null;
+            bot.flankDest = null;
+          }
+          if (bot.state === 'retreat') {
+            bot.state = 'bandage';
+            bot.bandageT = 0;
+            bot.bandageSeq = bot.hitSeq;
+            bot.bandageInterrupts = 0;
+          }
         } else {
           bot.stuckT = 0;
         }
         bot.lastPos.copy(bot.group.position);
       }
 
-      // 机器人之间分离：避免重叠穿模
+      // 机器人之间分离：避免重叠穿模；同队额外保持 1.6m 散开队形，
+      // 不扎堆挤在一个掩体后（掩体后静止/包扎中的不推，避免推出掩体）。
       for (const other of bots) {
         if (other === bot || !other.alive) continue;
         const dx = bot.group.position.x - other.group.position.x;
         const dz = bot.group.position.z - other.group.position.z;
         const d = Math.hypot(dx, dz);
-        if (d < 0.8 && d > 0.001) {
-          const push = (0.8 - d) * 0.5;
-          bot.group.position.x += (dx / d) * push;
-          bot.group.position.z += (dz / d) * push;
+        if (d < 0.001) continue;
+        const sameTeam = other.team === bot.team;
+        const radius = sameTeam ? 1.6 : 0.8;
+        if (d >= radius) continue;
+        if (sameTeam) {
+          const busy = (b) => b.state === 'bandage' || (b.cover && b.cover.phase === 'hidden');
+          if (busy(bot) || busy(other)) continue;
         }
+        const push = (radius - d) * (sameTeam ? 0.3 : 0.5);
+        bot.group.position.x += (dx / d) * push;
+        bot.group.position.z += (dz / d) * push;
       }
 
       // 与玩家保持距离：机器人不许站进玩家身体里（出生点路径点 [0,40]
@@ -1206,7 +1912,131 @@ export function createBotManager({
         gear: { ...b.gear },
         bleeding: bleedingZones(b.bleed),
         hasTarget: !!b.target,
+        // 战术调试（v0.14）：角色/掩体/包抄/包扎/搜寻状态
+        role: b.role,
+        coverId: b.cover ? b.cover.point.id : null,
+        coverPhase: b.cover ? b.cover.phase : null,
+        coverPoint: b.cover ? { x: +b.cover.point.x.toFixed(1), z: +b.cover.point.z.toFixed(1) } : null,
+        bandaging: b.state === 'bandage',
+        bandageT: +b.bandageT.toFixed(2),
+        hunting: b.hunting,
+        flankDest: b.flankDest ? { x: +b.flankDest.x.toFixed(1), z: +b.flankDest.z.toFixed(1) } : null,
+        magLeft: b.magLeft,
+        reloading: b.reloadT > 0,
+        reloadMove: !!b.reloadMove,
+        targetKey: !b.target ? null : b.target.kind === 'player' ? 'player' : 'bot:' + b.target.bot.id,
       }));
+    },
+    // 掩体点快照（验证用）：位置与占用情况。
+    coverPoints() {
+      return coverPoints.map((p) => ({
+        id: p.id,
+        x: +p.x.toFixed(2),
+        z: +p.z.toFixed(2),
+        top: +p.top.toFixed(2),
+        reservedBy: p.reservedBy,
+      }));
+    },
+    getColliders() {
+      return colliders;
+    },
+    // 调试：对机器人当前目标跑一遍找掩体决策并返回淘汰统计（无副作用，
+    // 不占用掩体点）。用于定位“附近有点却不找掩体”的原因。
+    coverProbe(i) {
+      const bot = bots[i];
+      if (!bot || !bot.alive || !bot.target) return null;
+      let tPos;
+      if (bot.target.kind === 'player') {
+        tPos = bot.lastKnown; // 玩家实时位置不在此作用域内，用最后已知位置
+      } else {
+        const tb = bot.target.bot;
+        if (!tb.alive) return null;
+        tPos = tb.group.position;
+      }
+      const tDist = Math.hypot(tPos.x - bot.group.position.x, tPos.z - bot.group.position.z);
+      const trace = { cands: 0, checked: 0, segFail: 0, losFail: 0, peekFail: 0 };
+      const found = tDist <= 35 ? findCover(bot, tPos, 14, 'fight', trace) : null;
+      return {
+        tDist: +tDist.toFixed(1),
+        hasCover: !!bot.cover,
+        role: bot.role,
+        hunting: bot.hunting,
+        ...trace,
+        found: found ? found.id : null,
+      };
+    },
+    // 调试：对机器人造成一次非致命命中（手臂/腿部，不触发 incapacitated），
+    // 攻击者位置可指定（默认机器人正南 10m）。返回命中结果与机器人状态。
+    hurtBot(i, zone, severity, ax, az) {
+      const bot = bots[i];
+      if (!bot || !bot.alive) return null;
+      const pos = new THREE.Vector3(
+        ax !== undefined ? ax : bot.group.position.x,
+        0,
+        az !== undefined ? az : bot.group.position.z + 10
+      );
+      const res = applyHit(
+        bot,
+        {
+          zone,
+          zoneLabel: ZONE_LABELS[zone] || zone,
+          severity,
+          outcomeLabel: '贯穿',
+          incapacitated: false,
+        },
+        1,
+        { team: 'blue', name: '测试员', isPlayer: true, pos }
+      );
+      return {
+        ...res,
+        alive: bot.alive,
+        state: bot.state,
+        integrity: { ...bot.integrity },
+        bleeding: bleedingZones(bot.bleed),
+      };
+    },
+    // 调试：传送机器人并清战术状态（掩体占用/角色/目标/冷却全复位）。
+    // 可选 yaw：让脚本场景里的机器人一落地就面对对手。
+    teleportBot(i, x, z, yaw) {
+      const bot = bots[i];
+      if (!bot) return;
+      releaseTactical(bot);
+      bot.group.position.set(x, 0, z);
+      if (yaw !== undefined) {
+        bot.yaw = yaw;
+        bot.group.rotation.y = yaw;
+      }
+      bot.collider.x = x;
+      bot.collider.z = z;
+      bot.path = [];
+      bot.pathIdx = 0;
+      bot.lastPos.set(x, 0, z);
+      bot.target = null;
+      bot.targetLostT = 0;
+      bot.state = bot.alive ? 'patrol' : 'dead';
+      bot.retreatCooldownUntil = 0;
+      bot.prevMinI = 1;
+      bot.lastRetreatDestroyed = 0;
+      bot.moveSpeed = 0;
+      bot.yawVel = 0;
+      bot.idleT = 0;
+    },
+    // 调试：设置机器人剩余弹药（换弹掩体测试用）。
+    setBotMag(i, n) {
+      const bot = bots[i];
+      if (bot) bot.magLeft = n;
+    },
+    // 调试：回满机器人状态（完整度/防具/失血），不碰位置、目标与战术
+    // 状态——用于把“走位机制”与“TTK 竞速”分开验证。
+    healBot(i) {
+      const bot = bots[i];
+      if (!bot || !bot.alive) return;
+      bot.integrity = { head: 1, chest: 1, abdomen: 1, arm: 1, leg: 1 };
+      bot.destroyed.clear();
+      bot.gear = createGearState();
+      clearBleeds(bot.bleed);
+      bot.prevMinI = 1;
+      bot.lastRetreatDestroyed = 0;
     },
   };
 }

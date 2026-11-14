@@ -1,4 +1,4 @@
-// IMPASSE v0.13 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
+// IMPASSE v0.14 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
 // 渲染：Three.js（CDN）；输入：Pointer Lock + 触屏；毁伤：damage.js 纯函数；
 // 失血：bleeding.js 纯函数（假人 + 玩家）；防具：armor.js 纯函数（包在毁伤
 // 判定之前）；比赛：match.js 纯函数（计分 + 背水一战）；记录：records.js。
@@ -6,20 +6,20 @@
 // 环境，靶子隐藏、机器人上场。记录两张图共用，死斗胜负单独记。
 // 素材（GLB/PBR/HDRI）由 assets.js 加载，加载完成（或超时回退）后才建造
 // 地图与枪；任何一件素材失败都走程序化/纯色回退，游戏不受影响。
-// 缓存策略：全部本地模块带 ?v=0.13 查询串，版本升级即换地址，避免新旧文件混版。
+// 缓存策略：全部本地模块带 ?v=0.14 查询串，版本升级即换地址，避免新旧文件混版。
 
 import * as THREE from 'three';
-import { createControls } from './controls.js?v=0.13';
-import { createGun, WEAPON_STATS, WEAPON_ORDER } from './gun.js?v=0.13';
-import { createTargets, RANGE_LAYOUT, STREET_LAYOUT } from './targets.js?v=0.13';
-import { createRange } from './range.js?v=0.13';
-import { createStreet } from './street.js?v=0.13';
-import { createHud } from './hud.js?v=0.13';
-import { createAudio } from './audio.js?v=0.13';
-import { createSettingsStore, initSettingsPanel, KEY_ACTIONS, keyLabel } from './settings.js?v=0.13';
-import { createRecordsStore } from './records.js?v=0.13';
-import { loadAssets } from './assets.js?v=0.13';
-import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.13';
+import { createControls } from './controls.js?v=0.14';
+import { createGun, WEAPON_STATS, WEAPON_ORDER } from './gun.js?v=0.14';
+import { createTargets, RANGE_LAYOUT, STREET_LAYOUT } from './targets.js?v=0.14';
+import { createRange } from './range.js?v=0.14';
+import { createStreet } from './street.js?v=0.14';
+import { createHud } from './hud.js?v=0.14';
+import { createAudio } from './audio.js?v=0.14';
+import { createSettingsStore, initSettingsPanel, KEY_ACTIONS, keyLabel } from './settings.js?v=0.14';
+import { createRecordsStore } from './records.js?v=0.14';
+import { loadAssets } from './assets.js?v=0.14';
+import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.14';
 import {
   createBleedState,
   rollBleed,
@@ -34,14 +34,14 @@ import {
   bleedSpeedFactor,
   bleedVignetteOpacity,
   bleedSwayAmplitude,
-} from './bleeding.js?v=0.13';
-import { createGearState, applyGearHit, gearStatus, GEAR_LABELS } from './armor.js?v=0.13';
-import { createMatch, recordKill, buffModifiers, WIN_SCORE } from './match.js?v=0.13';
-import { createBotManager } from './bots.js?v=0.13';
+} from './bleeding.js?v=0.14';
+import { createGearState, applyGearHit, gearStatus, GEAR_LABELS } from './armor.js?v=0.14';
+import { createMatch, recordKill, buffModifiers, WIN_SCORE } from './match.js?v=0.14';
+import { createBotManager } from './bots.js?v=0.14';
 
 // 唯一版本号：由脚本写进主页的版本标签，显示的版本即脚本版本，
 // 旧脚本缓存不会谎报新版本（HTML 里的占位文案只是加载前显示）。
-const VERSION = '0.13';
+const VERSION = '0.14';
 
 // 移动速度（m/s）：v0.13 按 Ryan 反馈“移动太慢”上调——步行 3.4 → 4.25（+25%）、
 // 疾跑 5.2 → 6.24（+20%）；机瞄 1.9 不动（战术慢速）。机器人速度在 bots.js
@@ -1756,6 +1756,14 @@ window.__impasseDebug = {
     },
     get bots() { return botManager ? botManager.getBots() : []; },
     checkWaypoints() { return botManager ? botManager.checkWaypoints() : null; },
+    // 战术调试（v0.14）：掩体点/碰撞体快照、定点伤害、传送、设弹药。
+    coverPoints() { return botManager ? botManager.coverPoints() : []; },
+    colliders() { return botManager ? botManager.getColliders() : []; },
+    damageBot(i, zone, severity, ax, az) { return botManager ? botManager.hurtBot(i, zone, severity, ax, az) : null; },
+    coverProbe(i) { return botManager ? botManager.coverProbe(i) : null; },
+    teleportBot(i, x, z, yaw) { if (botManager) botManager.teleportBot(i, x, z, yaw); },
+    setBotMag(i, n) { if (botManager) botManager.setBotMag(i, n); },
+    healBot(i) { if (botManager) botManager.healBot(i); },
     killBot(i) {
       if (!botManager) return;
       const b = botManager.bots[i];
