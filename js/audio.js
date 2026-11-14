@@ -10,7 +10,7 @@
 // 传输格式：采样以 base64 文本（.b64）存在仓库里（推送工具拒二进制），
 // 这里复用 assets.js 的 fetchAssetBytes() 取回原始字节再解码。
 
-import { fetchAssetBytes } from './assets.js?v=0.12';
+import { fetchAssetBytes } from './assets.js?v=0.13';
 
 const SAMPLE_FILES = {
   shotNear: 'shot-ar15-near.m4a',
@@ -40,7 +40,37 @@ export function createAudio() {
   let noiseBuf = null;
   const samples = {};
   const failedSamples = new Set();
+  const trimmedMs = {}; // 采样名 -> 剪掉的前置静音（毫秒），调试用
   let preloadStarted = false;
+
+  // 前置静音剪裁：实测枪声/换弹采样在 decodeAudioData 后的 buffer 里，
+  // 可听瞬变之前有 15~64ms 近静音（shot-ar15-near 50.8ms、换弹匣装回
+  // 63.7ms、拉机柄 46.6ms），声音相对枪口闪光/换弹动画固定晚到——这就
+  // 是 Ryan 说的“音画不同步”。解码后直接剪掉首个 -40dBFS 之上的采样
+  // 之前的内容（留 ~2ms 保护），不是播放时加偏移补偿：剪完的 buffer
+  // 从第 0 帧就是声音，start() 当帧即响。脚步/命中采样本身只有 ~3ms
+  // 前置，剪裁近乎无操作。
+  function trimLeadingSilence(buf) {
+    const THRESH = 0.01; // -40dBFS
+    const GUARD = Math.floor(buf.sampleRate * 0.002); // 2ms 保护，不剪破瞬变
+    let first = buf.length;
+    for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+      const d = buf.getChannelData(ch);
+      for (let i = 0; i < d.length; i++) {
+        if (Math.abs(d[i]) >= THRESH) {
+          if (i < first) first = i;
+          break;
+        }
+      }
+    }
+    const cut = Math.max(0, first - GUARD);
+    if (cut <= 0) return { buf, trimmedMs: 0 };
+    const out = ctx.createBuffer(buf.numberOfChannels, buf.length - cut, buf.sampleRate);
+    for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+      out.copyToChannel(buf.getChannelData(ch).subarray(cut), ch);
+    }
+    return { buf: out, trimmedMs: (cut / buf.sampleRate) * 1000 };
+  }
 
   function ensure() {
     if (ctx) {
@@ -85,7 +115,10 @@ export function createAudio() {
     const jobs = Object.entries(SAMPLE_FILES).map(async ([key, file]) => {
       try {
         const buf = await fetchAssetBytes(`audio/${file}`);
-        samples[key] = await ctx.decodeAudioData(buf);
+        const decoded = await ctx.decodeAudioData(buf);
+        const { buf: trimmed, trimmedMs: ms } = trimLeadingSilence(decoded);
+        samples[key] = trimmed;
+        trimmedMs[key] = Math.round(ms * 10) / 10;
       } catch (e) {
         failedSamples.add(key);
       }
@@ -273,6 +306,7 @@ export function createAudio() {
       loaded: Object.keys(samples).length,
       total: Object.keys(SAMPLE_FILES).length,
       failed: [...failedSamples],
+      trimmedMs: { ...trimmedMs },
     };
   }
 

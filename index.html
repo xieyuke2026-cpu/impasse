@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>IMPASSE v0.12</title>
-<link rel="stylesheet" href="css/style.css?v=0.12">
+<title>IMPASSE v0.13</title>
+<link rel="stylesheet" href="css/style.css?v=0.13">
 <script type="importmap">
 {
   "imports": {
@@ -51,14 +51,11 @@
     <span class="weapon-slot" data-weapon="pistol" title="手枪"><svg viewBox="0 0 24 20" fill="currentColor" aria-hidden="true"><path d="M2 3h17v5h-7l-2 9H5l1.5-9H2z"/></svg><em>2</em></span>
     <span class="weapon-slot" data-weapon="knife" title="战术刀"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 19L18 4l3 1.5L8 20l-3 1.5z"/><path d="M7 21l-4.5 1L4 17.5z"/></svg><em>3</em></span>
   </div>
-  <!-- 防具耐久（仅团队死斗显示）：防弹衣 / 头盔各 5 格 -->
-  <div id="gear-pips">
-    <div class="gear-row" id="gear-armor"><span class="gear-label">防弹衣</span><span class="gear-seg on"></span><span class="gear-seg on"></span><span class="gear-seg on"></span><span class="gear-seg on"></span><span class="gear-seg on"></span></div>
-    <div class="gear-row" id="gear-helmet"><span class="gear-label">头盔</span><span class="gear-seg on"></span><span class="gear-seg on"></span><span class="gear-seg on"></span><span class="gear-seg on"></span><span class="gear-seg on"></span></div>
-  </div>
   <div id="bleed-indicator"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C12 2 5 10.2 5 15a7 7 0 0 0 14 0C19 10.2 12 2 12 2z"/></svg><span id="bleed-zones"></span></div>
   <div id="reload-wrap"><div id="reload-bar"></div><span>换弹中…</span></div>
   <div id="bandage-wrap"><div id="bandage-bar"></div><span>包扎中…</span></div>
+  <!-- 状态行：换弹/包扎完成等短暂提示（原毁伤日志里的状态文案落在这里） -->
+  <div id="status-line"></div>
 </div>
 
 <!-- 右上：计分与重置 -->
@@ -69,8 +66,20 @@
   <button id="btn-pause" type="button">暂停</button>
 </div>
 
-<!-- 右侧：毁伤日志 -->
-<div id="damage-log"></div>
+<!-- 右侧：身体状况图（v0.13 起取代毁伤日志）——七个部位实时着色，
+     失血部位红点脉冲；防弹衣/头盔耐久显示为对应部位上的细条（仅死斗）。 -->
+<div id="body-status" aria-label="身体状况">
+  <div class="bs-title">身体状况</div>
+  <svg viewBox="0 0 100 168" aria-hidden="true">
+    <g id="bs-head"><circle class="bs-shape" cx="50" cy="15" r="12"/><rect id="bs-gear-helmet" class="bs-gearbar" x="38" y="26" width="24" height="3"/><circle class="bleed-dot" cx="61" cy="6" r="3.5"/></g>
+    <g id="bs-chest"><path class="bs-shape" d="M34,30 L66,30 L63,66 L37,66 Z"/><rect id="bs-gear-armor-chest" class="bs-gearbar" x="39" y="62" width="22" height="3"/><circle class="bleed-dot" cx="66" cy="33" r="3.5"/></g>
+    <g id="bs-abdomen"><rect class="bs-shape" x="37" y="68" width="26" height="28" rx="4"/><rect id="bs-gear-armor-abdomen" class="bs-gearbar" x="39" y="92" width="22" height="3"/><circle class="bleed-dot" cx="64" cy="71" r="3.5"/></g>
+    <g id="bs-arm-l"><rect class="bs-shape" x="19" y="32" width="11" height="50" rx="5"/><circle class="bleed-dot" cx="19" cy="34" r="3.5"/></g>
+    <g id="bs-arm-r"><rect class="bs-shape" x="70" y="32" width="11" height="50" rx="5"/><circle class="bleed-dot" cx="81" cy="34" r="3.5"/></g>
+    <g id="bs-leg-l"><rect class="bs-shape" x="37" y="98" width="11" height="62" rx="5"/><circle class="bleed-dot" cx="37" cy="100" r="3.5"/></g>
+    <g id="bs-leg-r"><rect class="bs-shape" x="52" y="98" width="11" height="62" rx="5"/><circle class="bleed-dot" cx="63" cy="100" r="3.5"/></g>
+  </svg>
+</div>
 
 <!-- 团队死斗 HUD：比分 / 击杀播报 / 背水一战 -->
 <div id="tdm-score"><span id="tdm-blue">0</span><span class="tdm-sep">:</span><span id="tdm-red">0</span><span class="tdm-target">/ 30</span></div>
@@ -110,6 +119,7 @@
   <button id="btn-jump" type="button" aria-label="跳跃"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="20" x2="12" y2="5"/><polyline points="5 11 12 4 19 11"/></svg></button>
   <button id="btn-bandage" type="button" aria-label="包扎"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10 3h4v7h7v4h-7v7h-4v-7H3v-4h7z"/></svg></button>
   <button id="btn-weapon" type="button" aria-label="切换武器"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>
+  <button id="btn-sprint" type="button" aria-label="疾跑（按住）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 5 11 12 4 19"/><polyline points="12 5 19 12 12 19"/></svg></button>
 </div>
 
 <!-- 布局编辑条（仅编辑布局时显示） -->
@@ -124,7 +134,7 @@
 <div id="start-overlay" class="overlay show">
   <div class="home">
     <div class="home-main">
-      <h1 class="home-title">IMPASSE <span class="ver">v0.12</span></h1>
+      <h1 class="home-title">IMPASSE <span class="ver">v0.13</span></h1>
       <p class="home-sub">射击 · 无血条 · 模块化毁伤判定</p>
       <div class="mode-list">
         <div class="mode-card selected" data-map="range">
@@ -154,7 +164,7 @@
           <button id="btn-help" type="button" class="home-btn-ghost">操作说明</button>
         </div>
       </div>
-      <p class="home-foot"><span class="ver">v0.12</span> · Three.js · 纯静态页面</p>
+      <p class="home-foot"><span class="ver">v0.13</span> · Three.js · 纯静态页面</p>
       <p class="home-credits">素材：Kenney · Quaternius · Poly Haven（CC0）· 字体 Rajdhani（OFL）</p>
     </div>
     <div class="home-records">
@@ -191,6 +201,6 @@
   <div class="panel settings-panel" id="settings-panel"></div>
 </div>
 
-<script type="module" src="js/main.js?v=0.12"></script>
+<script type="module" src="js/main.js?v=0.13"></script>
 </body>
 </html>

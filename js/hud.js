@@ -1,5 +1,6 @@
-// HUD：弹药、射击模式、准星散布、命中标记、毁伤日志、计分、提示浮层。
-// 全部中文界面。注意：界面上没有任何血条。
+// HUD：弹药、射击模式、准星散布、命中标记、身体状况图、计分、提示浮层。
+// 全部中文界面。注意：界面上没有任何血条。v0.13 起毁伤日志被身体状况图
+// 取代（Ryan 定）：部位状态看图，重要事件走中央提示，击杀走播报条。
 
 export function createHud() {
   const el = (id) => document.getElementById(id);
@@ -10,10 +11,10 @@ export function createHud() {
   const crosshair = el('crosshair');
   const hitmarker = el('hitmarker');
   const hitLabel = el('hitmarker-label');
-  const logEl = el('damage-log');
   const scoreLine = el('score-line');
   const zoneLine = el('zone-line');
   const toastEl = el('toast');
+  const statusLine = el('status-line');
   const reloadWrap = el('reload-wrap');
   const reloadBar = el('reload-bar');
   const startOverlay = el('start-overlay');
@@ -25,6 +26,22 @@ export function createHud() {
   const bandageBar = el('bandage-bar');
   const bleedVignette = el('bleed-vignette');
   const collapseFade = el('collapse-fade');
+  // 身体状况图：七个部位（手臂/腿部左右镜像同一份部位数据——毁伤模型
+  // 本来就不分左右），防具耐久条压在受保护部位的下沿。
+  const bodyZones = {};
+  for (const id of ['head', 'chest', 'abdomen', 'arm-l', 'arm-r', 'leg-l', 'leg-r']) {
+    const g = el(`bs-${id}`);
+    bodyZones[id] = g ? {
+      shape: g.querySelector('.bs-shape'),
+      dot: g.querySelector('.bleed-dot'),
+    } : null;
+  }
+  const gearBars = {
+    helmet: el('bs-gear-helmet'),
+    armorChest: el('bs-gear-armor-chest'),
+    armorAbdomen: el('bs-gear-armor-abdomen'),
+  };
+  const GEAR_BAR_W = { helmet: 24, armorChest: 22, armorAbdomen: 22 };
   // 团队死斗 HUD（v0.12）：比分、击杀播报、增益、重生、结算、防具、武器槽。
   const tdmScore = el('tdm-score');
   const tdmBlue = el('tdm-blue');
@@ -38,14 +55,13 @@ export function createHud() {
   const matchOverlay = el('match-overlay');
   const matchTitle = el('match-title');
   const matchScore = el('match-score');
-  const gearPips = el('gear-pips');
-  const gearArmorSegs = gearPips ? gearPips.querySelectorAll('#gear-armor .gear-seg') : [];
-  const gearHelmetSegs = gearPips ? gearPips.querySelectorAll('#gear-helmet .gear-seg') : [];
   const weaponSlots = el('weapon-slots');
 
   let hitTimer = null;
   let toastTimer = null;
   let buffBannerTimer = null;
+  let statusTimer = null;
+  let lastBodyKey = '';
 
   function setAmmo(mag, reserveText) {
     ammoMag.textContent = String(mag);
@@ -112,17 +128,55 @@ export function createHud() {
     }, 220);
   }
 
-  function addLog(text, cls = '') {
-    const entry = document.createElement('div');
-    entry.className = `log-entry ${cls}`;
-    entry.textContent = text;
-    logEl.prepend(entry);
-    while (logEl.children.length > 6) logEl.removeChild(logEl.lastChild);
+  // 身体状况图：按真实玩家状态着色。integrity 为各部位完整度 0..1（非死斗
+  // 模式传全 1，只有失血会让部位变色）；bleeding 为正在失血的部位名；
+  // gear 为 gearStatus() 快照或 null（非死斗无防具，耐久条隐藏）。
+  // 内部做变化检测：主循环每 0.25s 刷新一次，状态没变不碰 DOM。
+  function setBodyStatus({ integrity, bleeding, gear }) {
+    const key = JSON.stringify([integrity, bleeding, gear]);
+    if (key === lastBodyKey) return;
+    lastBodyKey = key;
+    const zoneOf = {
+      head: 'head', chest: 'chest', abdomen: 'abdomen',
+      'arm-l': 'arm', 'arm-r': 'arm', 'leg-l': 'leg', 'leg-r': 'leg',
+    };
+    for (const [id, z] of Object.entries(zoneOf)) {
+      const parts = bodyZones[id];
+      if (!parts) continue;
+      const v = integrity ? (integrity[z] ?? 1) : 1;
+      const cond = v <= 0 ? 'destroyed' : v < 0.35 ? 'critical' : v < 0.7 ? 'damaged' : 'healthy';
+      const isBleed = bleeding && bleeding.includes(z);
+      parts.shape.setAttribute('class', `bs-shape ${cond}${isBleed ? ' bleeding' : ''}`);
+      if (parts.dot) parts.dot.classList.toggle('on', !!isBleed);
+    }
+    // 防具耐久条：压在受保护部位下沿，宽度 = 剩余比例；无防具（非死斗）隐藏。
+    const paintBar = (barEl, frac, fullW) => {
+      if (!barEl) return;
+      if (frac === null || frac === undefined) {
+        barEl.style.display = 'none';
+        return;
+      }
+      barEl.style.display = '';
+      const f = Math.max(0, Math.min(1, frac));
+      barEl.setAttribute('width', String(Math.max(0, fullW * f)));
+      barEl.setAttribute('class', `bs-gearbar${f <= 0 ? ' gone' : f < 0.35 ? ' low' : ''}`);
+    };
+    paintBar(gearBars.helmet, gear ? gear.helmet : null, GEAR_BAR_W.helmet);
+    paintBar(gearBars.armorChest, gear ? gear.armor : null, GEAR_BAR_W.armorChest);
+    paintBar(gearBars.armorAbdomen, gear ? gear.armor : null, GEAR_BAR_W.armorAbdomen);
   }
 
-  // 新一局开始前清空旧日志（回主页 / 重新进入时调用）。
-  function clearLog() {
-    logEl.innerHTML = '';
+  // 弹药下方的状态行：换弹/包扎完成等短暂提示。ms > 0 时到时自动清空。
+  function setStatusLine(text, ms = 0) {
+    if (!statusLine) return;
+    if (statusTimer) {
+      clearTimeout(statusTimer);
+      statusTimer = null;
+    }
+    statusLine.textContent = text;
+    if (text && ms > 0) {
+      statusTimer = setTimeout(() => { statusLine.textContent = ''; }, ms);
+    }
   }
 
   function setScore({ shots, hits, zoneCounts, elapsedSec }) {
@@ -155,8 +209,19 @@ export function createHud() {
     if (tdmRed) tdmRed.textContent = String(red);
   }
 
-  // 击杀播报：killer/victim 为 { name, team }，killer 为 null 表示无击杀者
-  // （如失血倒地）。名字按队伍着色，“你”永远金色。最多留 5 条，6s 后淡出。
+  // 击杀播报（瘦身播报条）：killer/victim 为 { name, team }，killer 为 null
+  // 表示无击杀者（如失血倒地）。名字按队伍着色，“你”永远金色。
+  // v0.13 起最多留 3 条，4s 后淡出——播报条只报比赛信息，不当日志用。
+  function pushFeedEntry(entry) {
+    if (!killFeed) return;
+    killFeed.prepend(entry);
+    while (killFeed.children.length > 3) killFeed.removeChild(killFeed.lastChild);
+    setTimeout(() => {
+      entry.classList.add('fade');
+      setTimeout(() => entry.remove(), 600);
+    }, 4000);
+  }
+
   function addKillFeed(killer, victim) {
     if (!killFeed) return;
     const entry = document.createElement('div');
@@ -169,12 +234,16 @@ export function createHud() {
     entry.innerHTML = killer
       ? `${nameHtml(killer)} <span class="kf-arrow">▸</span> ${nameHtml(victim)}`
       : `${nameHtml(victim)} <span class="kf-note">倒地</span>`;
-    killFeed.prepend(entry);
-    while (killFeed.children.length > 5) killFeed.removeChild(killFeed.lastChild);
-    setTimeout(() => {
-      entry.classList.add('fade');
-      setTimeout(() => entry.remove(), 600);
-    }, 6000);
+    pushFeedEntry(entry);
+  }
+
+  // 播报条里的纯文字比赛信息（背水一战结束等），与击杀同一套淡出规则。
+  function addFeedNote(text, cls = '') {
+    if (!killFeed) return;
+    const entry = document.createElement('div');
+    entry.className = `kill-entry feed-note ${cls}`;
+    entry.textContent = text;
+    pushFeedEntry(entry);
   }
 
   function clearKillFeed() {
@@ -229,20 +298,6 @@ export function createHud() {
     if (matchOverlay) matchOverlay.classList.remove('show');
   }
 
-  // 防具状态：两排 5 格耐久格（防弹衣/头盔），空格 = 已损耗，0 格 + 红框 = 已摧毁。
-  function setGear(armorFrac, helmetFrac) {
-    const paint = (segs, frac) => {
-      const filled = Math.round(Math.max(0, Math.min(1, frac)) * segs.length);
-      segs.forEach((s, i) => s.classList.toggle('on', i < filled));
-    };
-    paint(gearArmorSegs, armorFrac);
-    paint(gearHelmetSegs, helmetFrac);
-    const armorRow = el('gear-armor');
-    const helmetRow = el('gear-helmet');
-    if (armorRow) armorRow.classList.toggle('destroyed', armorFrac <= 0);
-    if (helmetRow) helmetRow.classList.toggle('destroyed', helmetFrac <= 0);
-  }
-
   // 武器槽高亮：当前武器金色边框。
   function setWeaponSlots(current) {
     if (!weaponSlots) return;
@@ -262,8 +317,8 @@ export function createHud() {
     setCollapseFade,
     setCrosshair,
     showHitmarker,
-    addLog,
-    clearLog,
+    setBodyStatus,
+    setStatusLine,
     setScore,
     toast,
     showStart,
@@ -272,6 +327,7 @@ export function createHud() {
     hidePause,
     setTdmScore,
     addKillFeed,
+    addFeedNote,
     clearKillFeed,
     showBuffBanner,
     setBuffIndicator,
@@ -280,7 +336,6 @@ export function createHud() {
     hideRespawn,
     showMatchOverlay,
     hideMatchOverlay,
-    setGear,
     setWeaponSlots,
   };
 }

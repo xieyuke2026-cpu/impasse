@@ -2,7 +2,7 @@
 // 触屏是第一公民：iPad 上只用触摸就能完成全部操作。
 // 键位、触屏灵敏度、机瞄方式等来自 settings.js，可由玩家自定义。
 
-import { DEFAULT_KEYS } from './settings.js?v=0.12';
+import { DEFAULT_KEYS } from './settings.js?v=0.13';
 
 export function createControls({ canvas, elements, settings }) {
   const isTouch =
@@ -32,6 +32,11 @@ export function createControls({ canvas, elements, settings }) {
 
   let suspended = false; // 设置面板打开时：忽略全部游戏输入
   let layoutEditing = false; // 布局编辑中：触屏按钮不触发动作，只响应拖拽
+
+  // 触屏疾跑键是按住式：按住 = Shift，与键盘疾跑同一状态（主循环的速度
+  // 公式与机瞄互斥逻辑完全共用，不复制逻辑）。松开/切后台/进设置即复位，
+  // 不会卡住持续疾跑。摇杆推满（>92%）同样触发疾跑，见 update()。
+  let touchSprintHeld = false;
 
   // 触屏包扎键是开关式：点一下打开读条，再点关闭（单手拇指按住 2.5s 的同时
   // 另一只手还要转视角，太别扭；Ryan 点按后期待立刻有反应）。
@@ -74,6 +79,7 @@ export function createControls({ canvas, elements, settings }) {
   window.addEventListener('blur', () => {
     keys.clear();
     setBandageToggle(false);
+    touchSprintHeld = false;
     state.firing = false;
     state.aiming = false;
     state.bandaging = false;
@@ -329,6 +335,11 @@ export function createControls({ canvas, elements, settings }) {
   // 武器切换键（图标键）：点按循环 步枪 → 手枪 → 战术刀。
   bindTap(elements.btnWeapon, () => emit('weaponCycle'));
 
+  // 疾跑键：触屏/鼠标按住式（bindHold 与开火键同一套松开即停逻辑）。
+  bindHold(elements.btnSprint,
+    () => { touchSprintHeld = true; },
+    () => { touchSprintHeld = false; });
+
   // 包扎键：触屏/鼠标点按开关式。点按后发 'bandageToggle' 事件带上新状态，
   // 主循环据此给无失血时的空按一次反馈（不能让按钮悄悄没反应）。
   // 键盘包扎键仍为按住式（见 update 里的 keys.has(k.bandage)）。
@@ -370,9 +381,12 @@ export function createControls({ canvas, elements, settings }) {
     state.moveX = x;
     state.moveY = y;
     // 疾跑默认左 Shift：左右 Shift 都认；一旦重绑到其它键，就只认绑定的键。
-    state.sprint = keys.has(k.sprint) ||
+    // 触屏两条路进同一状态：疾跑键按住，或摇杆推满（偏转 >92%，手机 FPS 通例）。
+    const kbSprint = keys.has(k.sprint) ||
       ((k.sprint === 'ShiftLeft' || k.sprint === 'ShiftRight') &&
         (keys.has('ShiftLeft') || keys.has('ShiftRight')));
+    const joyDeflect = joystick.active ? Math.hypot(joystick.x, joystick.y) : 0;
+    state.sprint = kbSprint || touchSprintHeld || joyDeflect > 0.92;
     // 包扎：键盘绑定键按住，或触屏包扎键开关已打开。
     state.bandaging = keys.has(k.bandage) || touchBandageToggle;
   }
@@ -394,6 +408,7 @@ export function createControls({ canvas, elements, settings }) {
     if (v) {
       keys.clear();
       setBandageToggle(false);
+      touchSprintHeld = false;
       state.firing = false;
       state.bandaging = false;
       setAimActive(false);
@@ -404,6 +419,7 @@ export function createControls({ canvas, elements, settings }) {
     layoutEditing = v;
     if (v) {
       state.firing = false;
+      touchSprintHeld = false;
       setBandageToggle(false); // 布局编辑不该让读条在身后自己续上
     }
   }

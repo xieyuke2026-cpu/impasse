@@ -1,4 +1,4 @@
-// IMPASSE v0.12 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
+// IMPASSE v0.13 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
 // 渲染：Three.js（CDN）；输入：Pointer Lock + 触屏；毁伤：damage.js 纯函数；
 // 失血：bleeding.js 纯函数（假人 + 玩家）；防具：armor.js 纯函数（包在毁伤
 // 判定之前）；比赛：match.js 纯函数（计分 + 背水一战）；记录：records.js。
@@ -6,20 +6,20 @@
 // 环境，靶子隐藏、机器人上场。记录两张图共用，死斗胜负单独记。
 // 素材（GLB/PBR/HDRI）由 assets.js 加载，加载完成（或超时回退）后才建造
 // 地图与枪；任何一件素材失败都走程序化/纯色回退，游戏不受影响。
-// 缓存策略：全部本地模块带 ?v=0.12 查询串，版本升级即换地址，避免新旧文件混版。
+// 缓存策略：全部本地模块带 ?v=0.13 查询串，版本升级即换地址，避免新旧文件混版。
 
 import * as THREE from 'three';
-import { createControls } from './controls.js?v=0.12';
-import { createGun, WEAPON_STATS, WEAPON_ORDER } from './gun.js?v=0.12';
-import { createTargets, RANGE_LAYOUT, STREET_LAYOUT } from './targets.js?v=0.12';
-import { createRange } from './range.js?v=0.12';
-import { createStreet } from './street.js?v=0.12';
-import { createHud } from './hud.js?v=0.12';
-import { createAudio } from './audio.js?v=0.12';
-import { createSettingsStore, initSettingsPanel, KEY_ACTIONS, keyLabel } from './settings.js?v=0.12';
-import { createRecordsStore } from './records.js?v=0.12';
-import { loadAssets } from './assets.js?v=0.12';
-import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.12';
+import { createControls } from './controls.js?v=0.13';
+import { createGun, WEAPON_STATS, WEAPON_ORDER } from './gun.js?v=0.13';
+import { createTargets, RANGE_LAYOUT, STREET_LAYOUT } from './targets.js?v=0.13';
+import { createRange } from './range.js?v=0.13';
+import { createStreet } from './street.js?v=0.13';
+import { createHud } from './hud.js?v=0.13';
+import { createAudio } from './audio.js?v=0.13';
+import { createSettingsStore, initSettingsPanel, KEY_ACTIONS, keyLabel } from './settings.js?v=0.13';
+import { createRecordsStore } from './records.js?v=0.13';
+import { loadAssets } from './assets.js?v=0.13';
+import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.13';
 import {
   createBleedState,
   rollBleed,
@@ -34,15 +34,21 @@ import {
   bleedSpeedFactor,
   bleedVignetteOpacity,
   bleedSwayAmplitude,
-} from './bleeding.js?v=0.12';
-import { createGearState, applyGearHit, gearStatus, GEAR_LABELS } from './armor.js?v=0.12';
-import { createMatch, recordKill, buffModifiers, WIN_SCORE } from './match.js?v=0.12';
-import { createBotManager } from './bots.js?v=0.12';
+} from './bleeding.js?v=0.13';
+import { createGearState, applyGearHit, gearStatus, GEAR_LABELS } from './armor.js?v=0.13';
+import { createMatch, recordKill, buffModifiers, WIN_SCORE } from './match.js?v=0.13';
+import { createBotManager } from './bots.js?v=0.13';
 
 // 唯一版本号：由脚本写进主页的版本标签，显示的版本即脚本版本，
 // 旧脚本缓存不会谎报新版本（HTML 里的占位文案只是加载前显示）。
-const VERSION = '0.12';
+const VERSION = '0.13';
 
+// 移动速度（m/s）：v0.13 按 Ryan 反馈“移动太慢”上调——步行 3.4 → 4.25（+25%）、
+// 疾跑 5.2 → 6.24（+20%）；机瞄 1.9 不动（战术慢速）。机器人速度在 bots.js
+// 里同比例上调（巡逻 2.4 → 3.0、交战 3.2 → 4.0），避免玩家相对 AI 像开了加速。
+const WALK_SPEED = 4.25;
+const SPRINT_SPEED = 6.24;
+const ADS_SPEED = 1.9;
 const RELOAD_TIME = 1.8; // 步枪换弹时长（WEAPON_STATS.rifle.reloadTime 的镜像，初始值用）
 const AUTO_INTERVAL = 0.1; // 600 RPM
 const SEMI_INTERVAL = 0.14;
@@ -115,10 +121,10 @@ const audio = createAudio();
 const settings = createSettingsStore();
 const recordsStore = createRecordsStore();
 audio.preloadSamples(); // fire-and-forget：采样在后台解码，失败的那一声走合成回退
-// 失血导致模块损毁时，targets 通过事件回调让主循环写日志/弹提示（两套靶子共用）。
+// 失血导致模块损毁时，targets 通过事件回调让主循环弹提示（两套靶子共用）。
+// v0.13 起毁伤日志已删：模块损毁看假人变色 + 血泊，失能弹中央提示。
 const onTargetEvent = (evt) => {
   if (evt.type === 'bleedDestroy') {
-    hud.addLog(`假人${evt.zoneLabel}模块因失血损毁！`, 'crit');
     if (evt.incapacitated) hud.toast('目标失能！');
   }
 };
@@ -194,6 +200,7 @@ const controls = createControls({
     btnJump: document.getElementById('btn-jump'),
     btnBandage: document.getElementById('btn-bandage'),
     btnWeapon: document.getElementById('btn-weapon'),
+    btnSprint: document.getElementById('btn-sprint'),
   },
 });
 initSettingsPanel({
@@ -314,27 +321,20 @@ function playerTakeHit(zone, severity = 0.4, attacker = null) {
     const finalSeverity = gearRes.severity;
     if (gearRes.gearHit) {
       const gearName = GEAR_LABELS[gearRes.gearHit];
+      // 击穿/摧毁是重要事件，走中央提示；挡下伤害看身体状况图的耐久条。
       if (gearRes.penetrated) {
-        hud.addLog(`击穿！你的${gearName}被击穿，${ZONE_LABELS[z]}受到全额伤害`, 'crit');
+        hud.toast(`击穿！${gearName}被击穿，全额伤害`);
       } else if (gearRes.destroyed) {
-        hud.addLog(`你的${gearName}被摧毁！`, 'crit');
-      } else {
-        hud.addLog(`${gearName}挡下了大部分伤害（耐久 ${Math.round(gearRes.remaining)}%）`);
+        hud.toast(`你的${gearName}被摧毁！`);
       }
-      const st = gearStatus(tdm.playerGear);
-      hud.setGear(st.armor, st.helmet);
     }
     tdm.playerIntegrity[z] = Math.max(0, tdm.playerIntegrity[z] - finalSeverity);
     bloodLoss += finalSeverity * IMMEDIATE_BLEED_FACTOR;
     const r = rollBleed(playerBleed, z, Math.random());
     if (r.triggered && !r.refreshed) {
-      hud.addLog(`你${ZONE_LABELS[z]}中弹，开始失血！`, 'crit');
       hud.toast('失血！快包扎止血');
-    } else if (r.triggered) {
-      hud.addLog(`你${ZONE_LABELS[z]}再次中弹，失血持续`, 'crit');
-    } else {
-      hud.addLog(`你${ZONE_LABELS[z]}中弹（未触发失血）`);
     }
+    // 其余命中反馈看身体状况图（部位变色 + 失血脉冲），不再写日志。
     if (attacker) {
       tdm.playerLastAttacker = attacker;
       tdm.playerLastAttackerT = performance.now() / 1000;
@@ -350,12 +350,7 @@ function playerTakeHit(zone, severity = 0.4, attacker = null) {
   bloodLoss += severity * IMMEDIATE_BLEED_FACTOR;
   const r = rollBleed(playerBleed, z, Math.random());
   if (r.triggered && !r.refreshed) {
-    hud.addLog(`你${ZONE_LABELS[z]}中弹，开始失血！`, 'crit');
     hud.toast('失血！快包扎止血');
-  } else if (r.triggered) {
-    hud.addLog(`你${ZONE_LABELS[z]}再次中弹，失血持续`, 'crit');
-  } else {
-    hud.addLog(`你${ZONE_LABELS[z]}中弹（未触发失血）`);
   }
   updateBleedHud();
 }
@@ -374,10 +369,10 @@ function recordTdmKill(killerTeam, killer, victim) {
       const teamName = e.team === 'blue' ? '蓝队' : '红队';
       hud.showBuffBanner(`背水一战！${teamName}失血效果 -5%，速度 +5%`);
       hud.setBuffIndicator(true, e.team);
-      hud.addLog(`背水一战触发：${teamName}获得增益（失血 -5%，速度 +5%）`, 'ricochet');
+      // 触发已有居中横幅 + 常驻指示，不再写日志。
     } else if (e.type === 'buffEnded') {
       hud.setBuffIndicator(false, null);
-      hud.addLog('背水一战结束', 'ricochet');
+      hud.addFeedNote('背水一战结束');
     } else if (e.type === 'win') {
       endMatch(e.team === 'blue');
     }
@@ -441,7 +436,7 @@ function respawnTdmPlayer() {
   ammoByWeapon.rifle = WEAPON_STATS.rifle.magSize;
   ammoByWeapon.pistol = WEAPON_STATS.pistol.magSize;
   hud.hideRespawn();
-  hud.setGear(1, 1);
+  updateBodyHud();
   updateWeaponHud();
 }
 
@@ -458,7 +453,6 @@ function endMatch(won) {
   hud.setBuffIndicator(false, null);
   hud.hideRespawn();
   hud.showMatchOverlay(won, tdm.match.scores.blue, tdm.match.scores.red);
-  hud.addLog(won ? `胜利！蓝队率先达到 ${WIN_SCORE} 分` : `惜败，红队率先达到 ${WIN_SCORE} 分`, 'ricochet');
   if (document.exitPointerLock) document.exitPointerLock();
 }
 
@@ -507,14 +501,27 @@ function startMatch() {
   hud.setBuffIndicator(false, null);
   hud.hideMatchOverlay();
   hud.hideRespawn();
-  hud.setGear(1, 1);
-  hud.addLog(`团队死斗开始！先到 ${WIN_SCORE} 分获胜`);
+  updateBodyHud();
+  hud.toast(`团队死斗开始！先到 ${WIN_SCORE} 分获胜`);
 }
 
 function updateBleedHud() {
   hud.setBleeding(bleedingZones(playerBleed).map((z) => ZONE_LABELS[z]));
   const btnBandage = document.getElementById('btn-bandage');
   if (btnBandage) btnBandage.classList.toggle('toggled', isBleeding(playerBleed));
+  updateBodyHud();
+}
+
+// 身体状况图刷新：死斗用真实模块完整度 + 防具耐久；靶场/街区没有模块与
+// 防具，部位默认全健康，只有失血会让部位变色+脉冲（模拟受伤看得见）。
+// hud.setBodyStatus 内部做变化检测，重复调用不碰 DOM。
+function updateBodyHud() {
+  const tdmActive = activeMap.isTdm && !!tdm;
+  hud.setBodyStatus({
+    integrity: tdmActive ? { ...tdm.playerIntegrity } : null,
+    bleeding: bleedingZones(playerBleed),
+    gear: tdmActive ? gearStatus(tdm.playerGear) : null,
+  });
 }
 
 // 取消包扎读条：姿态淡出、进度清零、触屏开关复位（读条不会自己续上）。
@@ -855,7 +862,6 @@ function shoot(now) {
     score.hits += 1;
     score.zoneCounts[evalResult.zone] += 1;
     hud.showHitmarker(evalResult.zoneLabel);
-    hud.addLog(res.log, evalResult.zone === 'head' ? 'crit' : '');
     if (res.incapacitated) hud.toast('目标失能！');
     spawnImpact(_hitPoint, false);
     audio.thud();
@@ -878,7 +884,6 @@ function shoot(now) {
     score.hits += 1;
     score.zoneCounts[evalResult.zone] += 1;
     hud.showHitmarker(evalResult.zoneLabel);
-    hud.addLog(res.log, evalResult.zone === 'head' ? 'crit' : '');
     if (res.killed) hud.toast(`${bot.name} 被击毙！`);
     spawnImpact(_hitPoint, false);
     audio.thud();
@@ -889,7 +894,6 @@ function shoot(now) {
     const res = activeMap.targets.applyPaperHit(obj, _hitPoint);
     score.hits += 1;
     hud.showHitmarker('纸靶');
-    hud.addLog(res.log);
     spawnImpact(_hitPoint, false);
     audio.thud();
     return;
@@ -899,7 +903,6 @@ function shoot(now) {
     const res = activeMap.targets.applySteelHit(obj, energy);
     score.hits += 1;
     hud.showHitmarker('钢板');
-    hud.addLog(res.log);
     spawnImpact(_hitPoint, true);
     audio.tink();
     // 钢板是硬表面：小角度命中可能跳弹
@@ -915,7 +918,6 @@ function shoot(now) {
   const ric = evaluateRicochet({ incidenceDeg, hardness: surface.hardness, roll: Math.random() });
   if (ric.ricochet) {
     deflectTracer(_hitPoint, normal);
-    hud.addLog(`跳弹！（入射角 ${Math.round(incidenceDeg)}°，${surface.kind === 'floor' ? '地面' : '硬表面'}）`, 'ricochet');
   }
 }
 
@@ -954,7 +956,6 @@ function meleeAttack(now) {
     score.hits += 1;
     score.zoneCounts[evalResult.zone] += 1;
     hud.showHitmarker(evalResult.zoneLabel);
-    hud.addLog(res.log, evalResult.zone === 'head' ? 'crit' : '');
     if (res.killed) hud.toast(`${bot.name} 被击毙！`);
     spawnImpact(hit.point, false);
     audio.thud();
@@ -968,7 +969,6 @@ function meleeAttack(now) {
     score.hits += 1;
     score.zoneCounts[evalResult.zone] += 1;
     hud.showHitmarker(evalResult.zoneLabel);
-    hud.addLog(res.log, evalResult.zone === 'head' ? 'crit' : '');
     if (res.incapacitated) hud.toast('目标失能！');
     spawnImpact(hit.point, false);
     audio.thud();
@@ -978,7 +978,6 @@ function meleeAttack(now) {
     const res = activeMap.targets.applyPaperHit(obj, hit.point);
     score.hits += 1;
     hud.showHitmarker('纸靶');
-    hud.addLog(res.log);
     spawnImpact(hit.point, false);
     audio.thud();
     return;
@@ -987,7 +986,6 @@ function meleeAttack(now) {
     const res = activeMap.targets.applySteelHit(obj, energy);
     score.hits += 1;
     hud.showHitmarker('钢板');
-    hud.addLog(res.log);
     spawnImpact(hit.point, true);
     audio.tink();
     return;
@@ -1015,7 +1013,6 @@ function startReload() {
   reloadDuration = stats.reloadTime; // 手枪换弹比步枪快
   reloadEnd = performance.now() / 1000 + reloadDuration;
   gun.setReloading(true);
-  hud.addLog('换弹中…');
 }
 
 function toggleMode() {
@@ -1037,7 +1034,6 @@ function toggleMode() {
 function resetTargets() {
   activeMap.targets.reset();
   clearAnnounced = false; // 重置后可以再次达成并播报全清
-  hud.addLog('靶子已重置');
   hud.toast('靶子已重置');
 }
 
@@ -1130,7 +1126,7 @@ function resetSession() {
   hudTimer = 0;
   updateWeaponHud();
   hud.setScore({ shots: 0, hits: 0, zoneCounts: score.zoneCounts, elapsedSec: 0 });
-  hud.clearLog();
+  updateBodyHud();
 }
 
 // 结算一场：只有开过火的场次才计入记录，0 发的空场次不污染总场次与上次成绩。
@@ -1191,7 +1187,7 @@ function startGame() {
   if (activeMap.isTdm) {
     startMatch();
   } else {
-    hud.addLog(`${activeMap.label}已就绪，开始射击`);
+    hud.toast(`${activeMap.label}已就绪，开始射击`);
   }
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 }
@@ -1272,11 +1268,12 @@ function openHelp() {
       <div class="help-row"><span>转动视角</span><span class="help-key">右半屏滑动</span></div>
       <div class="help-row"><span>射击 / 机瞄 / 换弹 / 切换模式</span><span class="help-key">右侧圆形按键</span></div>
       <div class="help-row"><span>射击（备用键）</span><span class="help-key">左上角圆形按键</span></div>
+      <div class="help-row"><span>疾跑</span><span class="help-key">按住左侧双箭头键，或摇杆推到底</span></div>
       <div class="help-row"><span>跳跃 / 包扎 / 切换武器</span><span class="help-key">右侧圆形按键</span></div>
       <div class="help-row"><span>按钮位置与大小</span><span class="help-key">设置里拖拽编辑</span></div>
     </div>
     <div class="help-section"><h3>毁伤与失血</h3>
-      <p class="help-note">假人分头 / 胸 / 腹 / 手臂 / 腿部五个模块，命中按部位与入射角判定贯穿、擦伤或骨骼偏转；跳弹只发生在钢板、墙体等硬表面。命中可能触发失血，持续加重模块毁伤；玩家受伤后也会失血（红屏、晃动、减速随失血量渐变加重），用包扎键止血，失血过多会倒地重生。</p>
+      <p class="help-note">假人分头 / 胸 / 腹 / 手臂 / 腿部五个模块，命中按部位与入射角判定贯穿、擦伤或骨骼偏转；跳弹只发生在钢板、墙体等硬表面。命中可能触发失血，持续加重模块毁伤；玩家受伤后也会失血（红屏、晃动、减速随失血量渐变加重），用包扎键止血，失血过多会倒地重生。右侧身体状况图实时显示你的各部位状态：绿健康、黄受损、红危重、黑损毁，红点脉冲表示正在失血；防具耐久显示在受保护部位的细条上。</p>
     </div>
     <div class="help-section"><h3>团队死斗 5v5</h3>
       <p class="help-note">你 + 4 名蓝队 AI 队友，对抗 5 名红队 AI 敌人，先到 30 分的队伍获胜。所有人配备步枪、手枪、战术刀、防弹衣与头盔：防弹衣护住胸腹、头盔护住头部，命中先打防具（吸收 70% 伤害），20% 概率击穿造成全额伤害，耐久耗尽即摧毁；阵亡 3 秒后重生，防具与状态全部重置。一方率先达到 20 分时，落后一方触发背水一战：失血效果 -5%、速度 +5%，直到该队再拿 5 个人头。</p>
@@ -1357,7 +1354,7 @@ function animate() {
     // bandaging 取上一帧的值，1 帧滞后不可见。
     const aiming = controls.state.aiming && !reloading && !bandaging && currentWeapon !== 'knife';
     const bleedFrac = bleedFraction(bloodLoss);
-    const baseSpeed = aiming ? 1.9 : controls.state.sprint ? 5.2 : 3.4;
+    const baseSpeed = aiming ? ADS_SPEED : controls.state.sprint ? SPRINT_SPEED : WALK_SPEED;
     const speed = baseSpeed * bleedSpeedFactor(bleedFrac) * tdmMods.speedFactor;
     const sin = Math.sin(player.yaw);
     const cos = Math.cos(player.yaw);
@@ -1475,7 +1472,7 @@ function animate() {
         gun.setBandaging(false);
         controls.clearBandageLatch();
         audio.heal();
-        hud.addLog('包扎完成，失血止住了');
+        hud.setStatusLine('包扎完成，失血止住了', 2000);
         hud.toast('已止血');
         updateBleedHud();
       }
@@ -1498,7 +1495,7 @@ function animate() {
     // 垂直摆动一周期一步，横向摆动与滚转半频（一步一晃）；机瞄时因移速变慢
     // 摆动自然变小，沿用旧行为，不特殊处理。
     const speedNow = Math.hypot(player.vel.x, player.vel.z);
-    const speedNorm = Math.min(1, speedNow / 3.4);
+    const speedNorm = Math.min(1, speedNow / WALK_SPEED);
     const bobTarget = player.grounded ? BOB_VERT_AMP * speedNorm : 0;
     player.bobAmp += (bobTarget - player.bobAmp) * Math.min(1, 6 * dt);
     if (speedNorm > 0.05) player.bobT += dt * (5 + 5 * speedNorm);
@@ -1536,7 +1533,7 @@ function animate() {
         ammoByWeapon[currentWeapon] = WEAPON_STATS[currentWeapon].magSize;
         gun.setReloading(false);
         hud.setReloading(false);
-        hud.addLog('换弹完成');
+        hud.setStatusLine('换弹完成', 1500);
       }
     }
 
@@ -1588,12 +1585,12 @@ function animate() {
     if (hudTimer > 0.25) {
       hudTimer = 0;
       hud.setScore({ shots: score.shots, hits: score.hits, zoneCounts: score.zoneCounts, elapsedSec: elapsed });
+      updateBodyHud(); // 失血会随时间损毁模块（bleed tick），图要跟着变
       // 全清判定：纸靶（含移动靶）全倒 + 钢板全倒 + 假人失能。达成即时保存
       // 最快全清（不等回主页结算），每局只播报一次。死斗没有靶子，不判定。
       if (!activeMap.isTdm && !clearAnnounced && activeMap.targets.getClearState().cleared) {
         clearAnnounced = true;
         recordsStore.recordClear(Math.max(0, Math.round(elapsed)));
-        hud.addLog(`全部清除！用时 ${formatElapsed(elapsed)}`, 'ricochet');
         hud.toast('全部清除！');
       }
     }
@@ -1681,6 +1678,7 @@ window.__impasseDebug = {
   get bleeding() { return bleedingZones(playerBleed); },
   get bleedFraction() { return bleedFraction(bloodLoss); },
   get speedFactor() { return bleedSpeedFactor(bleedFraction(bloodLoss)); },
+  get sprinting() { return controls.state.sprint; },
   get bandageProgress() { return bandageT / BANDAGE_TIME; },
   get bandaging() { return bandaging; },
   get bandagePose() { return gun.getBandagePose(); },

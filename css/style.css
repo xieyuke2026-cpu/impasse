@@ -219,7 +219,7 @@ body.touch #btn-pause { display: inline-block; }
 /* 主页状态下隐藏全部局内 HUD（弹药/计分/日志/准星/触屏按钮），只留主页界面。 */
 body.home #hud-bl,
 body.home #hud-tr,
-body.home #damage-log,
+body.home #body-status,
 body.home #crosshair,
 body.home #hitmarker,
 body.home #hitmarker-label,
@@ -231,26 +231,35 @@ body.home #buff-indicator,
 body.home #respawn-overlay,
 body.home #match-overlay { display: none !important; }
 
-#damage-log {
+/* 身体状况图（v0.13 起取代毁伤日志）：右侧小面板，七部位实时着色；
+   失血部位红点脉冲 + 描边闪烁；防具耐久条压在受保护部位下沿。 */
+#body-status {
   position: fixed;
   right: 20px;
   top: 110px;
-  width: 300px;
+  width: 118px;
   z-index: 10;
   pointer-events: none;
-  font-size: 13px;
-  line-height: 1.45;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 8px;
+  padding: 7px 8px 5px;
 }
-.log-entry {
-  background: rgba(0, 0, 0, 0.5);
-  border-left: 3px solid #8fb8ff;
-  border-radius: 3px;
-  padding: 5px 8px;
-  margin-bottom: 5px;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
-}
-.log-entry.crit { border-left-color: #ff5a4d; color: #ffd9d4; }
-.log-entry.ricochet { border-left-color: #ffd75e; color: #ffedbe; }
+#body-status svg { width: 100%; height: auto; display: block; }
+.bs-title { font-size: 11px; color: #cfcfcf; text-align: center; letter-spacing: 2px; margin-bottom: 2px; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9); }
+.bs-shape { fill: #3d5a43; stroke: #7fae88; stroke-width: 1.5; }
+.bs-shape.damaged { fill: #8a6a2a; stroke: #d9a93b; }
+.bs-shape.critical { fill: #8a2f28; stroke: #ff5a4d; }
+.bs-shape.destroyed { fill: #1e2026; stroke: #666; stroke-dasharray: 3 2; }
+.bs-shape.bleeding { animation: bs-pulse 1s infinite; }
+@keyframes bs-pulse { 50% { stroke: #ff2d20; stroke-width: 3; } }
+.bleed-dot { fill: #ff2d20; display: none; animation: bs-pulse 1s infinite; }
+.bleed-dot.on { display: block; }
+.bs-gearbar { fill: #8fb8ff; }
+.bs-gearbar.low { fill: #d9a93b; }
+.bs-gearbar.gone { fill: #ff5a4d; }
+
+/* 状态行：弹药下方的短暂提示（换弹/包扎完成），空时不占视觉但留高度防抖。 */
+#status-line { margin-top: 6px; min-height: 18px; font-size: 13px; color: #ffd75e; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9); }
 
 #toast {
   position: fixed;
@@ -278,7 +287,7 @@ body.tdm #kill-feed { display: block; }
 body.tdm #btn-reset { display: none; }
 body.tdm #score-line,
 body.tdm #zone-line { display: none; }
-body.tdm #damage-log { top: 300px; }
+body.tdm #body-status { top: 250px; right: 110px; } /* 死斗时播报条在右上，身体状况图让到播报条下方，并左移让出右侧按钮列（武器键在 right:40 列，图放 right:20 会被压住腿部） */
 #tdm-score {
   position: fixed;
   left: 50%;
@@ -371,21 +380,6 @@ body.tdm #damage-log { top: 300px; }
 #respawn-timer { font-size: 18px; color: #fff; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9); }
 #match-title.win { color: #ffd75e; }
 #match-title.lose { color: #ff7a6a; }
-/* 防具耐久格：只在团队死斗显示，紧贴弹药 HUD */
-#gear-pips { display: none; margin-top: 6px; }
-body.tdm #gear-pips { display: block; }
-.gear-row { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
-.gear-label { font-size: 12px; color: #cfcfcf; width: 44px; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9); }
-.gear-seg {
-  width: 18px;
-  height: 8px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-}
-.gear-seg.on { background: #8fb8ff; border-color: #8fb8ff; }
-.gear-row.destroyed .gear-label { color: #ff7a6a; }
-.gear-row.destroyed .gear-seg { border-color: rgba(255, 90, 77, 0.6); }
 /* 武器槽：三种武器，当前武器金色边框 */
 #weapon-slots { display: flex; gap: 6px; margin-top: 8px; }
 .weapon-slot {
@@ -494,6 +488,9 @@ body.touch #hud-bl { left: 20px; bottom: 170px; }
 #btn-bandage { right: calc(134px * var(--btn-scale, 1)); bottom: calc(250px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); border-color: rgba(143, 227, 136, 0.7); }
 /* 武器切换键：跳跃键上方一格，图标为上下交换箭头，点按循环切换武器 */
 #btn-weapon { right: calc(40px * var(--btn-scale, 1)); bottom: calc(354px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); }
+/* 疾跑键：摇杆同侧上方，左手拇指按住即可疾跑（摇杆推到底同样触发）；
+   图标为双箭头，位置可拖拽；摇杆换边时镜像到右侧。 */
+#btn-sprint { left: calc(30px * var(--btn-scale, 1)); bottom: calc(360px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); border-color: rgba(255, 215, 94, 0.7); }
 
 /* 摇杆在右：摇杆区/视角区与按钮组整体镜像，弹药 HUD 让到右侧 */
 body.joystick-right #joystick-zone { left: auto; right: 0; }
@@ -506,6 +503,7 @@ body.joystick-right #btn-mode { right: auto; left: calc(134px * var(--btn-scale,
 body.joystick-right #btn-jump { right: auto; left: calc(40px * var(--btn-scale, 1)); }
 body.joystick-right #btn-bandage { right: auto; left: calc(134px * var(--btn-scale, 1)); }
 body.joystick-right #btn-weapon { right: auto; left: calc(40px * var(--btn-scale, 1)); }
+body.joystick-right #btn-sprint { left: auto; right: calc(30px * var(--btn-scale, 1)); }
 
 /* 布局编辑：强制显示触屏按钮（桌面端也能调），按钮可拖拽 */
 body.layout-edit #touch-ui { display: block; }
@@ -691,7 +689,7 @@ body.settings-open { touch-action: auto; }
 .settings-actions button { margin-top: 0; }
 
 @media (max-width: 700px) {
-  #damage-log { width: 220px; top: 96px; font-size: 12px; }
+  #body-status { width: 92px; top: 96px; right: 12px; }
   #ammo { font-size: 32px; }
 }
 

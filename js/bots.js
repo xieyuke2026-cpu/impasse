@@ -11,7 +11,7 @@
 
 import * as THREE from 'three';
 import { clone as skClone } from 'three/addons/utils/SkeletonUtils.js';
-import { evaluateHit, ZONE_LABELS } from './damage.js?v=0.12';
+import { evaluateHit, ZONE_LABELS } from './damage.js?v=0.13';
 import {
   createBleedState,
   rollBleed,
@@ -20,13 +20,18 @@ import {
   clearBleeds,
   bleedingZones,
   BLEED_TICK_RATE,
-} from './bleeding.js?v=0.12';
-import { createGearState, applyGearHit, GEAR_LABELS } from './armor.js?v=0.12';
+} from './bleeding.js?v=0.13';
+import { createGearState, applyGearHit, GEAR_LABELS } from './armor.js?v=0.13';
 
 // 士兵模型部位判定带：与 targets.js 的 ZONE_BANDS / SOLDIER_OFFSET 完全一致，
 // 两边改一边必须同步（同一模型、同一 Idle 姿态）。
 const ZONE_BANDS = { headY: 1.48, chestY: 1.05, abdomenY: 0.62, armX: 0.27, armY0: 0.6, armY1: 1.45 };
 const SOLDIER_OFFSET = new THREE.Vector3(-0.048, 0, 0.165);
+// 士兵 clip 的自然移动速度（实测 GLB 动画数据：脚掌 Z 向跨度 / clip 时长；
+// clip 本身无根运动，Bone 根节点位移恒定）：Walk 1.09m/1.25s，Run 1.33m/0.88s。
+// 播放速率 = 地面速度 / 自然速度，脚掌不再相对地面滑行。
+const WALK_NATURAL_SPEED = 0.87;
+const RUN_NATURAL_SPEED = 1.51;
 
 export const BOT_NAMES = {
   blue: ['猎鹰', '山猫', '磐石', '疾风'],
@@ -221,12 +226,14 @@ export function createBotManager({
     const model = team === 'blue' ? soldierBlue : soldierRed;
     const disposables = [];
     let mixer = null;
+    let soldierClone = null; // 骨骼模型克隆体（绑枪到右手骨骼用）
     const actions = {};
     const botMeshes = [];
     const baseColors = [];
 
     if (model) {
       const clone = skClone(model);
+      soldierClone = clone;
       clone.position.copy(SOLDIER_OFFSET);
       group.add(clone);
       clone.traverse((o) => {
@@ -310,16 +317,34 @@ export function createBotManager({
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 0.02;
     group.add(ring);
+    // 手持步枪（装饰）：绑到右手骨骼 FistR 上，随手臂摆动/举枪一起动。
+    // v0.12 把枪固定在躯干前方，播走/跑动画时手臂甩动而枪悬空不动，
+    // 像一块浮在胸前的板子，是“诡异感”的来源之一。程序化方块人没有
+    // 骨骼，退回躯干固定位。枪身局部 +Z 为枪口方向，贴着拳头握把处。
+    const gunGroup = new THREE.Group();
     const gunBody = new THREE.Mesh(gunBodyGeo, gunMat);
-    gunBody.position.set(0.18, 1.28, 0.32);
-    group.add(gunBody);
+    gunBody.position.set(0, 0, 0.1);
+    gunBody.frustumCulled = false;
+    gunGroup.add(gunBody);
     const gunBarrel = new THREE.Mesh(gunBarrelGeo, gunMat);
     gunBarrel.rotation.x = Math.PI / 2;
-    gunBarrel.position.set(0.18, 1.3, 0.68);
-    group.add(gunBarrel);
+    gunBarrel.position.set(0, 0.01, 0.47);
+    gunBarrel.frustumCulled = false;
+    gunGroup.add(gunBarrel);
     const gunMag = new THREE.Mesh(gunMagGeo, gunMat);
-    gunMag.position.set(0.18, 1.2, 0.3);
-    group.add(gunMag);
+    gunMag.position.set(0, -0.09, 0.08);
+    gunMag.frustumCulled = false;
+    gunGroup.add(gunMag);
+    const fist = soldierClone ? soldierClone.getObjectByName('FistR') : null;
+    if (fist) {
+      // 拳头骨骼局部坐标：枪身沿前臂方向握持（视觉迭代后定，见截图验证）
+      gunGroup.position.set(0, -0.03, 0.02);
+      gunGroup.rotation.set(Math.PI / 2, 0, 0);
+      fist.add(gunGroup);
+    } else {
+      gunGroup.position.set(0.18, 1.28, 0.32);
+      group.add(gunGroup);
+    }
 
     parent.add(group);
     const collider = { type: 'circle', x: 0, z: 0, r: 0.4, top: 1.95 };
@@ -341,7 +366,11 @@ export function createBotManager({
       alive: true,
       state: 'patrol', // patrol | engage | dead
       yaw: 0,
-      speed: 0,
+      speed: 0, // 当前地面速度（缓动后的值，动画重定时用它）
+      moveSpeed: 0, // 缓动后的移动速度：起步/刹车有加速度，不再瞬间满速
+      yawVel: 0, // 当前角速度（rad/s）：转身有加速/减速过程
+      roll: 0, // 当前身体侧倾（rad）：转身/横移时程序化内倾，软化 clip 僵直
+      strafing: false, // 本帧是否在横移（侧倾方向用）
       integrity: { head: 1, chest: 1, abdomen: 1, arm: 1, leg: 1 },
       destroyed: new Set(),
       gear: createGearState(),
@@ -404,6 +433,11 @@ export function createBotManager({
     bot.group.visible = true;
     bot.group.rotation.x = 0;
     bot.group.rotation.y = 0;
+    bot.group.rotation.z = 0;
+    bot.moveSpeed = 0;
+    bot.yawVel = 0;
+    bot.roll = 0;
+    bot.strafing = false;
     bot.group.position.set(spawnPoint[0], 0, spawnPoint[1]);
     bot.yaw = spawnPoint[1] > 0 ? Math.PI : 0; // 南侧出生面向北（-Z），北侧面向南
     bot.group.rotation.y = bot.yaw;
@@ -458,13 +492,18 @@ export function createBotManager({
     }
   }
 
+  // 动作切换一律交叉淡化，永不硬切：待机/走/跑之间 0.25s（腿的相位
+  // 错开时靠淡化抹平，不抽帧）；受击/开火/倒地 0.12s（反应要跟手，但
+  // 仍有淡化，不闪一下）。Ryan 说的“生硬”一半来自这里。
+  const LOCO_ACTIONS = new Set(['idle', 'walk', 'run']);
   function playAction(bot, name) {
     if (!bot.mixer || !bot.actions[name] || bot.currentAction === name) return;
     const prev = bot.currentAction && bot.actions[bot.currentAction];
     const next = bot.actions[name];
     if (prev && prev !== next) {
+      const dur = LOCO_ACTIONS.has(bot.currentAction) && LOCO_ACTIONS.has(name) ? 0.25 : 0.12;
       next.reset().setEffectiveWeight(1).play();
-      next.crossFadeFrom(prev, 0.15, false);
+      next.crossFadeFrom(prev, dur, false);
     } else {
       next.reset().play();
     }
@@ -494,6 +533,11 @@ export function createBotManager({
     bot.burstLeft = 0;
     bot.collider.r = 0.01;
     bot.collider.top = 0; // 倒地不挡人
+    bot.moveSpeed = 0;
+    bot.yawVel = 0;
+    bot.roll = 0;
+    bot.strafing = false;
+    bot.group.rotation.z = 0; // 倒地时身体回正，不带着侧倾躺下
     clearBleeds(bot.bleed);
     if (bot.mixer && bot.actions.death) {
       playAction(bot, 'death');
@@ -516,7 +560,7 @@ export function createBotManager({
     if (!bot.alive) {
       return { log: `命中${evalResult.zoneLabel}（目标已倒地）`, killed: false, zoneLabel: evalResult.zoneLabel };
     }
-    bot.hitT = 0.3;
+    bot.hitT = 0.45; // 受击 clip 0.62s：0.3s 切走会把反应动作拦腰截断，看着抽搐
     bot.lastAttacker = attacker || null;
     bot.lastAttackerT = performance.now() / 1000;
     const gearRes = applyGearHit(bot.gear, zone, evalResult.severity * damageScale, Math.random());
@@ -717,8 +761,32 @@ export function createBotManager({
   }
 
   // ---------- 移动 ----------
+  // 速度缓动：起步加速度 5 m/s²（0 → 3m/s 约 0.6s），刹车 8 m/s²。
+  // 机器人不再瞬间满速/瞬间定住，腿的摆动速率（重定时用 bot.speed）
+  // 跟着速度一起起落，走→跑是加速过程不是换挡。
+  function easeSpeed(bot, target, dt) {
+    const rate = target > bot.moveSpeed ? 5 : 8;
+    bot.moveSpeed += THREE.MathUtils.clamp(target - bot.moveSpeed, -rate * dt, rate * dt);
+    return bot.moveSpeed;
+  }
+
+  // 二阶转向：角速度向“剩余角度 × 6”加速/减速（上限 maxRate），转身
+  // 起步有加速、到位有减速，不再以恒定满速起停。bot.yawVel 同时驱动
+  // 身体侧倾。没有转向指令的帧由主更新里的衰减把角速度归零。
+  function turnToward(bot, targetYaw, dt, maxRate) {
+    let dy = targetYaw - bot.yaw;
+    while (dy > Math.PI) dy -= Math.PI * 2;
+    while (dy < -Math.PI) dy += Math.PI * 2;
+    const desired = THREE.MathUtils.clamp(dy * 6, -maxRate, maxRate);
+    bot.yawVel += THREE.MathUtils.clamp(desired - bot.yawVel, -14 * dt, 14 * dt);
+    bot.yaw += bot.yawVel * dt;
+    bot.group.rotation.y = bot.yaw;
+  }
+
   const _moveDir = new THREE.Vector3();
-  function moveToward(bot, tx, tz, speed, dt) {
+  // faceMove=false 时不转向移动方向（交战横移：脸始终朝敌人，身体侧移；
+  // 否则每帧 faceToward 与 moveToward 抢朝向，机器人边横移边扭头，看着诡异）。
+  function moveToward(bot, tx, tz, speed, dt, faceMove = true) {
     const dx = tx - bot.group.position.x;
     const dz = tz - bot.group.position.z;
     const dist = Math.hypot(dx, dz);
@@ -744,13 +812,8 @@ export function createBotManager({
     bot.group.position.z += mz * speed * dt;
     bot.group.position.x = THREE.MathUtils.clamp(bot.group.position.x, -43, 43);
     bot.group.position.z = THREE.MathUtils.clamp(bot.group.position.z, -43, 43);
-    // 朝向：平滑转向移动方向
-    const targetYaw = Math.atan2(mx, mz);
-    let dy = targetYaw - bot.yaw;
-    while (dy > Math.PI) dy -= Math.PI * 2;
-    while (dy < -Math.PI) dy += Math.PI * 2;
-    bot.yaw += THREE.MathUtils.clamp(dy, -3.5 * dt, 3.5 * dt);
-    bot.group.rotation.y = bot.yaw;
+    // 朝向：二阶转向移动方向（横移时跳过，脸留在敌人身上）
+    if (faceMove) turnToward(bot, Math.atan2(mx, mz), dt, 3.5);
     // 到达半径 1.0m：必须大于玩家排斥半径（0.9m），否则玩家站在路径点
     // 上时机器人会被排斥圈挡在到达半径之外、永远到不了。
     return dist < 1.0;
@@ -760,12 +823,7 @@ export function createBotManager({
     const dx = tx - bot.group.position.x;
     const dz = tz - bot.group.position.z;
     if (Math.hypot(dx, dz) < 0.01) return;
-    const targetYaw = Math.atan2(dx, dz);
-    let dy = targetYaw - bot.yaw;
-    while (dy > Math.PI) dy -= Math.PI * 2;
-    while (dy < -Math.PI) dy += Math.PI * 2;
-    bot.yaw += THREE.MathUtils.clamp(dy, -4.5 * dt, 4.5 * dt);
-    bot.group.rotation.y = bot.yaw;
+    turnToward(bot, Math.atan2(dx, dz), dt, 4.5);
   }
 
   // ---------- 主更新 ----------
@@ -830,10 +888,16 @@ export function createBotManager({
         bot.burstLeft = 0;
       }
 
-      const patrolSpeed = 2.4 * mod.speedFactor;
-      const engageSpeed = 3.2 * mod.speedFactor;
+      // 无转向指令时角速度衰减归零（有指令的帧 turnToward 会重新加速）。
+      bot.yawVel *= Math.max(0, 1 - 10 * dt);
+      if (Math.abs(bot.yawVel) < 0.01) bot.yawVel = 0;
+
+      // v0.13：随玩家移速同比例上调（巡逻 2.4 → 3.0、交战 3.2 → 4.0），
+      // 否则玩家提速后机器人相对像在原地踏步。
+      const patrolSpeed = 3.0 * mod.speedFactor;
+      const engageSpeed = 4.0 * mod.speedFactor;
       let moving = false;
-      let running = false;
+      bot.strafing = false;
 
       if (bot.state === 'engage' && bot.target && combatEnabled) {
         // 目标位置
@@ -885,14 +949,12 @@ export function createBotManager({
             const path = bfsPath(graph.adj, fromNode, destNode);
             if (path && path.length > 1) {
               const wp = graph.nodes[path[1]];
-              moveToward(bot, wp.x, wp.z, engageSpeed, dt);
+              moveToward(bot, wp.x, wp.z, easeSpeed(bot, engageSpeed, dt), dt);
               moving = true;
-              running = true;
             }
           } else {
-            moveToward(bot, tx, tz, engageSpeed, dt);
+            moveToward(bot, tx, tz, easeSpeed(bot, engageSpeed, dt), dt);
             moving = true;
-            running = true;
           }
         } else {
           bot.strafeT += dt;
@@ -908,8 +970,10 @@ export function createBotManager({
           const sx = bot.strafeAnchor.x + px;
           const sz = bot.strafeAnchor.z + pz;
           if (!pointBlocked(colliders, sx, sz, 0.4)) {
-            moveToward(bot, sx, sz, engageSpeed * 0.7, dt);
+            // 横移：脸朝敌人（本帧开头 faceToward 已转好），不转向移动方向
+            moveToward(bot, sx, sz, easeSpeed(bot, engageSpeed * 0.7, dt), dt, false);
             moving = true;
+            bot.strafing = true;
           }
           // 锚点漂移：跟随目标慢慢前移，避免原地横移一整场
           bot.strafeAnchor.x += (bot.group.position.x - bot.strafeAnchor.x) * Math.min(1, dt * 0.3);
@@ -921,7 +985,7 @@ export function createBotManager({
           bot.idleT -= dt;
         } else if (bot.pathIdx < bot.path.length) {
           const wp = graph.nodes[bot.path[bot.pathIdx]];
-          if (moveToward(bot, wp.x, wp.z, patrolSpeed, dt)) {
+          if (moveToward(bot, wp.x, wp.z, easeSpeed(bot, patrolSpeed, dt), dt)) {
             bot.pathIdx += 1;
             if (bot.pathIdx >= bot.path.length) {
               bot.idleT = 1 + Math.random() * 2;
@@ -984,22 +1048,54 @@ export function createBotManager({
         }
       }
 
-      bot.speed = moving ? (running ? engageSpeed : patrolSpeed) : 0;
+      // 不移动的帧速度向 0 刹车；动画重定时与选 clip 都用缓动后的速度，
+      // 所以起步/停步时腿的摆动是加速/减速过程，不是开关。
+      if (!moving) easeSpeed(bot, 0, dt);
+      bot.speed = bot.moveSpeed;
       bot.collider.x = bot.group.position.x;
       bot.collider.z = bot.group.position.z;
 
+      // 程序化侧倾：转身时身体向转弯方向内倾，横移时向移动方向侧倾，
+      // 幅度 ≤0.1rad（约 5°），只软化 clip 本身的僵直感。侧倾本身也
+      // 缓动跟随，不跳变。转弯内倾符号经数值验证（77 个采样 roll 恒与
+      // yawVel 反号）；横移顺倾符号按同一推导，headless 采样窗口内无
+      // 横移样本，尚未实测（幅度仅 0.05rad，即使反号也只是一点晃动）。
+      // 符号：rotation.z 为正时上身倒向角色右侧；yawVel 为正时朝向
+      // 转向角色左侧，故转弯内倾取负号（与横移顺倾的符号推导不同）。
+      const turnLean = THREE.MathUtils.clamp(-bot.yawVel * 0.04, -0.06, 0.06);
+      const strafeLean = bot.strafing ? bot.strafeDir * 0.05 : 0;
+      const targetRoll = THREE.MathUtils.clamp(turnLean + strafeLean, -0.1, 0.1);
+      bot.roll += (targetRoll - bot.roll) * Math.min(1, 8 * dt);
+      bot.group.rotation.z = bot.roll;
+
       // 动画选择：受击 > 开火 > 移动（走/跑）> 待机；无动画时程序化摆动
+      // 播放速率按地面速度重定时：clip 是原地动画，脚掌 Z 向跨度 Walk 1.09m/
+      // 1.25s（自然速度 0.87m/s）、Run 1.33m/0.88s（1.51m/s），按 1.0 速率播而
+      // 地面以 3~4m/s 移动时，机器人以 2~3 倍腿速滑行（溜冰/鬼影感），这是
+      // v0.12“移动动画诡异”的主因。速率 = 地面速度/自然速度，夹在 0.8~2.0。
       if (bot.mixer) {
         if (bot.hitT > 0 && bot.actions.hit) playAction(bot, 'hit');
         else if (bot.burstLeft > 0 && bot.actions.shoot) playAction(bot, 'shoot');
-        else if (moving && running && bot.actions.run) playAction(bot, 'run');
+        else if (moving && bot.speed >= 2.0 && bot.actions.run) playAction(bot, 'run');
         else if (moving && bot.actions.walk) playAction(bot, 'walk');
         else if (bot.actions.idle) playAction(bot, 'idle');
+        const loco = bot.currentAction === 'run' ? bot.actions.run
+          : bot.currentAction === 'walk' ? bot.actions.walk : null;
+        for (const a of Object.values(bot.actions)) {
+          if (a === loco) {
+            const natural = bot.currentAction === 'run' ? RUN_NATURAL_SPEED : WALK_NATURAL_SPEED;
+            a.setEffectiveTimeScale(THREE.MathUtils.clamp(bot.speed / natural, 0.8, 2.0));
+          } else {
+            a.setEffectiveTimeScale(1);
+          }
+        }
       } else if (moving) {
-        bot.bobT += dt * 6;
-        bot.group.position.y = Math.abs(Math.sin(bot.bobT)) * 0.03;
+        // 无动画回退：摆动频率/幅度随缓动速度走，停步时高度缓落回 0
+        const speedNorm = Math.min(1, bot.moveSpeed / 3);
+        bot.bobT += dt * (3 + 4 * speedNorm);
+        bot.group.position.y = Math.abs(Math.sin(bot.bobT)) * 0.03 * speedNorm;
       } else {
-        bot.group.position.y = 0;
+        bot.group.position.y += (0 - bot.group.position.y) * Math.min(1, 8 * dt);
       }
     }
   }
@@ -1097,6 +1193,14 @@ export function createBotManager({
         x: +b.group.position.x.toFixed(1),
         z: +b.group.position.z.toFixed(1),
         state: b.state,
+        action: b.currentAction,
+        // 动画重定时调试：当前 clip 播放速率（= 地面速度/自然速度，夹 0.8~2.0）
+        rate: b.currentAction && b.actions[b.currentAction]
+          ? +b.actions[b.currentAction].getEffectiveTimeScale().toFixed(2) : null,
+        speed: +b.speed.toFixed(2),
+        yawVel: +b.yawVel.toFixed(2),
+        roll: +b.roll.toFixed(3),
+        strafing: b.strafing,
         alive: b.alive,
         integrity: { ...b.integrity },
         gear: { ...b.gear },

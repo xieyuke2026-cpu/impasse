@@ -9,13 +9,13 @@
 // 全是 base64 文本（<原名>.b64，见 tools/encode-assets.mjs）。这里 fetch 到
 // 文本后解码回 ArrayBuffer 再交给 Three.js / FontFace。解码是分块 atob，
 // 不会因为 ~1.5MB 的 HDRI .b64 产生巨型中间字符串。
-// 缓存策略：素材 URL 带 ?v=0.12，与模块版本查询串同一版本号，素材更新即换地址。
+// 缓存策略：素材 URL 带 ?v=0.13，与模块版本查询串同一版本号，素材更新即换地址。
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 
-export const ASSETS_VERSION = '0.12';
+export const ASSETS_VERSION = '0.13';
 const BASE = 'assets/';
 const av = (p) => `${BASE}${p}.b64?v=${ASSETS_VERSION}`;
 

@@ -50,6 +50,7 @@ const LAYOUT_BUTTONS = [
   { id: 'jump', el: 'btn-jump' },
   { id: 'bandage', el: 'btn-bandage' },
   { id: 'weapon', el: 'btn-weapon' },
+  { id: 'sprint', el: 'btn-sprint' },
 ];
 
 function clamp(v, min, max) { return Math.min(max, Math.max(min, v)); }

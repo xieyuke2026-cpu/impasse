@@ -20,8 +20,8 @@ import {
   clearBleeds,
   bleedingZones,
   totalSeverity,
-} from './bleeding.js?v=0.12';
-import { ZONE_LABELS } from './damage.js?v=0.12';
+} from './bleeding.js?v=0.13';
+import { ZONE_LABELS } from './damage.js?v=0.13';
 
 const HOLE_GEO = new THREE.CircleGeometry(0.014, 10);
 const HOLE_MAT = new THREE.MeshBasicMaterial({ color: 0x111111 });
