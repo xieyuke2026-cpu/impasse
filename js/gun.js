@@ -1,8 +1,10 @@
-// 步枪：视图模型 + 后坐力系统 + 双手 + 分段换弹动画。
+// 武器视图模型：步枪 / 手枪 / 战术刀 + 后坐力系统 + 双手 + 分段换弹动画。
 // 后坐力手感 = 镜头上跳 + 持续抬升 + 枪身后座 + 准星散布扩大，四者叠加。
-// （后坐力数值是 Ryan 在 iPad 上验过“可以”的，v0.2 一律不动。）
+// （步枪后坐力数值是 Ryan 在 iPad 上验过“可以”的，v0.2 一律不动；
+// 手枪是 v0.12 新增，数值独立，不碰步枪那条路径。）
 //
-// 视图模型两条路径（assets.js 加载结果决定）：
+// 三把武器各一个子组挂在枪组下，切换只改可见性与位姿参数，双手共用。
+// 步枪视图模型两条路径（assets.js 加载结果决定）：
 //   A. Quaternius 步枪 GLB（CC0）：单体模型 + 内嵌贴图，枪口朝 -Z，
 //      握把落在枪组原点附近，导轨顶沿对齐瞄准线 SIGHT_Y。
 //   B. 程序化模型（加载失败回退）：v0.2 起的方块拼枪，含弹匣/拉机柄
@@ -20,6 +22,15 @@
 // 下方中央一条，不会铺满整个下半屏。步枪 ADS z 再推远到 -0.55，枪托角尺寸更小。
 
 import * as THREE from 'three';
+
+// 各武器的弹药/射速/毁伤参数（主循环的射击逻辑读这里，枪身只管表现）。
+// 步枪数值与旧版一致；手枪弹匣小、换弹快、毁伤低、散布大；刀无弹药。
+export const WEAPON_STATS = {
+  rifle: { label: '步枪', magSize: 30, reloadTime: 1.8, autoInterval: 0.1, semiInterval: 0.14, damageScale: 1, canAds: true, automatic: true },
+  pistol: { label: '手枪', magSize: 12, reloadTime: 1.2, autoInterval: 0.16, semiInterval: 0.16, damageScale: 0.7, canAds: true, automatic: false },
+  knife: { label: '战术刀', magSize: 0, reloadTime: 0, autoInterval: 0.35, semiInterval: 0.35, damageScale: 1, canAds: false, automatic: false, meleeRange: 1.5, swingTime: 0.3 },
+};
+export const WEAPON_ORDER = ['rifle', 'pistol', 'knife'];
 
 const HIP_POS = new THREE.Vector3(0.26, -0.22, -0.45);
 const ADS_POS = new THREE.Vector3(0, -0.06, -0.50);
@@ -79,8 +90,37 @@ function makeFlashTexture() {
   return tex;
 }
 
-export function createGun({ camera, rifleModel = null }) {
+// 手枪瞄准线（局部坐标）：套筒顶沿对齐的高度，准星与照门都立在这条线上。
+const PISTOL_SIGHT_Y = 0.055;
+const PISTOL_HIP_POS = new THREE.Vector3(0.21, -0.19, -0.42);
+// 机瞄位把整枪再压低 10mm：套筒顶沿落到准星线下方，准星尖与照门顶沿
+// 齐平落在准星线（屏幕中心）上——准星若埋在套筒顶面里，从后面根本看不见。
+const PISTOL_ADS_POS = new THREE.Vector3(0, -PISTOL_SIGHT_Y - 0.01, -0.45);
+const KNIFE_HIP_POS = new THREE.Vector3(0.24, -0.2, -0.42);
+// 手枪双手：右手握把，左手在前下方托住（双手持枪的标准姿态）。
+const RIGHT_HAND_PISTOL = new THREE.Vector3(0, -0.06, 0.04);
+const LEFT_HAND_PISTOL = new THREE.Vector3(0, -0.07, -0.04);
+// 刀：右手握刀柄，左手放松垂在侧下方（只露一部分，不抢画面）。
+const RIGHT_HAND_KNIFE = new THREE.Vector3(0, -0.06, 0.03);
+const LEFT_HAND_KNIFE = new THREE.Vector3(-0.14, -0.16, -0.02);
+
+export function createGun({ camera, rifleModel = null, pistolModel = null }) {
   const group = new THREE.Group();
+  // 三把武器各一个子组：切换时只改可见性，模型只建一次。
+  const rifleGroup = new THREE.Group();
+  const pistolGroup = new THREE.Group();
+  const knifeGroup = new THREE.Group();
+  group.add(rifleGroup, pistolGroup, knifeGroup);
+  pistolGroup.visible = false;
+  knifeGroup.visible = false;
+  let currentWeapon = 'rifle';
+  // 每把武器的位姿表：枪口/抛壳锚点、双手位置、腰射/机瞄位姿。
+  // 步枪那条由 buildProcedural/buildRifle 填（沿用旧变量名），手枪/刀由各自的建造函数填。
+  const POSE = {
+    rifle: { muzzle: null, eject: null, rightHand: null, leftHand: null, hip: HIP_POS, ads: ADS_POS },
+    pistol: { muzzle: null, eject: null, rightHand: RIGHT_HAND_PISTOL, leftHand: LEFT_HAND_PISTOL, hip: PISTOL_HIP_POS, ads: PISTOL_ADS_POS },
+    knife: { muzzle: new THREE.Vector3(0, 0.014, -0.26), eject: new THREE.Vector3(0.04, 0, 0), rightHand: RIGHT_HAND_KNIFE, leftHand: LEFT_HAND_KNIFE, hip: KNIFE_HIP_POS, ads: KNIFE_HIP_POS },
+  };
   const metal = new THREE.MeshStandardMaterial({ color: 0x2b2e33, roughness: 0.55, metalness: 0.6 });
   const darkMetal = new THREE.MeshStandardMaterial({ color: 0x17181c, roughness: 0.5, metalness: 0.7 });
   const polymer = new THREE.MeshStandardMaterial({ color: 0x1d1f24, roughness: 0.8, metalness: 0.2 });
@@ -108,6 +148,8 @@ export function createGun({ camera, rifleModel = null }) {
 
   // ---------- 路径 B：程序化模型（v0.2 原样，加载失败回退） ----------
   function buildProcedural() {
+    // 局部遮蔽：函数体里的 group 全部指步枪子组，旧代码一字不用改。
+    const group = rifleGroup;
     // 机匣：上下两层叠出倒角感
     addBox(group, 0.062, 0.055, 0.34, metal, 0, -0.012, 0.02); // 下机匣
     addBox(group, 0.056, 0.045, 0.36, metal, 0, 0.032, 0); // 上机匣
@@ -205,6 +247,8 @@ export function createGun({ camera, rifleModel = null }) {
 
   // ---------- 路径 A：Quaternius 步枪 GLB ----------
   function buildRifle(model) {
+    // 局部遮蔽：函数体里的 group 全部指步枪子组，旧代码一字不用改。
+    const group = rifleGroup;
     const rifle = model.clone(true);
     // 枪口朝 -Z；再绕 X 下俯 0.14 rad：枪托顶面落到瞄准线下方约 0.011m，
     // 机瞄时枪托不再挡住画面中央（实测：0.08 仍高出 0.007，0.12 仅 -0.005）。
@@ -279,9 +323,9 @@ export function createGun({ camera, rifleModel = null }) {
     try {
       buildRifle(rifleModel);
     } catch (e) {
-      // GLB 摆放失败：清空枪组，退回程序化模型，游戏不受影响。
+      // GLB 摆放失败：只清空步枪子组（手枪/刀子组不受影响），退回程序化模型。
       // 摆位/双手基准一并复位，否则残留的步枪数值会带偏回退模型。
-      group.clear();
+      rifleGroup.clear();
       magGroup = null;
       chargingHandle = null;
       leftHandBase = LEFT_HAND_BASE;
@@ -291,6 +335,127 @@ export function createGun({ camera, rifleModel = null }) {
   } else {
     buildProcedural();
   }
+  // 步枪位姿表：建造函数沿用旧变量名，这里收进 POSE 表供切换时读取。
+  POSE.rifle.muzzle = muzzlePos;
+  POSE.rifle.eject = ejectPos;
+  POSE.rifle.rightHand = rightHandPos;
+  POSE.rifle.leftHand = leftHandBase;
+  POSE.rifle.ads = adsPos;
+
+  // ---------- 手枪：Kenney GLB（CC0），失败则程序化 ----------
+  // GLB 实测：长约 0.29m，枪口朝 +Z，握把在后下方。绕 Y 旋转 180° 后
+  // 枪口朝 -Z，再按变换后包围盒对齐：套筒顶沿 = 瞄准线，握把后端落在原点附近。
+  function buildPistolGLB(model) {
+    const pistol = model.clone(true);
+    pistol.rotation.set(0, Math.PI, 0);
+    // 0.55 而非 0.9：0.9 时手枪在机瞄下是遮住半屏的白墙（v0.12 截图验证）。
+    pistol.scale.setScalar(0.55);
+    pistolGroup.add(pistol);
+    pistol.traverse((o) => {
+      if (o.isMesh) {
+        o.castShadow = false;
+        o.receiveShadow = false;
+        // Kenney 的 grey 材质在枪景灯光下近乎白色——压暗一半，读作枪金属灰。
+        // 克隆材质再改色，避免污染共享材质。
+        if (o.material && o.material.color) {
+          o.material = o.material.clone();
+          o.material.color.multiplyScalar(0.5);
+        }
+      }
+    });
+    pistol.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(pistol);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const center = new THREE.Vector3();
+    box.getCenter(center);
+    // 对齐：x 居中、顶沿到瞄准线、后端（+Z 端）到 z=0.10。
+    pistol.position.x -= center.x;
+    pistol.position.y += PISTOL_SIGHT_Y - box.max.y;
+    pistol.position.z += 0.1 - box.max.z;
+    pistol.updateMatrixWorld(true);
+    // 枪口锚点：取最前端一小片顶点的平均位置（与步枪同一取样法）。
+    const _v = new THREE.Vector3();
+    let minZ = Infinity;
+    pistol.traverse((o) => {
+      if (!o.isMesh || !o.geometry || !o.geometry.attributes.position) return;
+      const pos = o.geometry.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        _v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+        if (_v.z < minZ) minZ = _v.z;
+      }
+    });
+    let sx = 0, sy = 0, n = 0;
+    pistol.traverse((o) => {
+      if (!o.isMesh || !o.geometry || !o.geometry.attributes.position) return;
+      const pos = o.geometry.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        _v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+        if (_v.z <= minZ + 0.02) { sx += _v.x; sy += _v.y; n++; }
+      }
+    });
+    POSE.pistol.muzzle = new THREE.Vector3(n > 0 ? sx / n : 0, n > 0 ? sy / n : PISTOL_SIGHT_Y - 0.01, Number.isFinite(minZ) ? minZ - 0.01 : -0.2);
+    POSE.pistol.eject = new THREE.Vector3(0.035, PISTOL_SIGHT_Y - 0.005, -0.02);
+    // 机械瞄具：准星 + 照门缺口（Kenney 模型自带的瞄具太小，机瞄时读不出来，
+    // 补一副程序化瞄具）。准星尖与照门顶沿都落在 PISTOL_SIGHT_Y + 10mm，
+    // 与机瞄位的下压量抵消后正好压在屏幕中心线上；准星用浅色——深色准星
+    // 在深色缺口里完全看不见（v0.12 截图验证）。
+    const postMat = new THREE.MeshStandardMaterial({ color: 0xd8dce0, roughness: 0.6, metalness: 0.2 });
+    addBox(pistolGroup, 0.005, 0.018, 0.005, postMat, 0, PISTOL_SIGHT_Y + 0.001, POSE.pistol.muzzle.z + 0.03);
+    for (const sxx of [-1, 1]) {
+      addBox(pistolGroup, 0.006, 0.012, 0.012, darkMetal, sxx * 0.014, PISTOL_SIGHT_Y + 0.004, 0.055);
+    }
+  }
+  function buildPistolProcedural() {
+    // 套筒 + 枪管 + 握把 + 扳机护圈 + 瞄具，瞄准线与 GLB 路径同一高度。
+    addBox(pistolGroup, 0.032, 0.032, 0.19, metal, 0, 0.038, -0.03);
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.03, 10), darkMetal);
+    barrel.rotation.x = Math.PI / 2;
+    barrel.position.set(0, 0.04, -0.135);
+    pistolGroup.add(barrel);
+    addBox(pistolGroup, 0.028, 0.085, 0.045, polymer, 0, -0.045, 0.055, 0.22); // 握把
+    addBox(pistolGroup, 0.01, 0.008, 0.05, polymer, 0, -0.012, 0.015); // 护圈底边
+    addBox(pistolGroup, 0.006, 0.024, 0.008, darkMetal, 0, -0.005, 0.025, 0.15); // 扳机
+    const postMat = new THREE.MeshStandardMaterial({ color: 0xd8dce0, roughness: 0.6, metalness: 0.2 });
+    addBox(pistolGroup, 0.005, 0.018, 0.005, postMat, 0, PISTOL_SIGHT_Y + 0.001, -0.11); // 准星（浅色、尖端与照门齐平，同 GLB 路径）
+    for (const sxx of [-1, 1]) {
+      addBox(pistolGroup, 0.006, 0.012, 0.012, darkMetal, sxx * 0.014, PISTOL_SIGHT_Y + 0.004, 0.055); // 照门
+    }
+    POSE.pistol.muzzle = new THREE.Vector3(0, 0.04, -0.155);
+    POSE.pistol.eject = new THREE.Vector3(0.03, 0.045, -0.02);
+  }
+  if (pistolModel) {
+    try {
+      buildPistolGLB(pistolModel);
+    } catch (e) {
+      pistolGroup.clear();
+      buildPistolProcedural();
+    }
+  } else {
+    buildPistolProcedural();
+  }
+
+  // ---------- 战术刀：程序化（staging 里没有刀模型） ----------
+  // 刀柄在握持点，刀身朝 -Z，刀尖约 0.3m。右手握柄，左手放松。
+  (function buildKnife() {
+    // 刀身侧面与补光几乎平行，纯靠漫反射仍漆黑（v0.12 两轮截图验证）：
+    // 加自发光打底（视角无关的浅灰）+ 刀身整体偏转，让宽面朝向镜头。
+    const bladeMat = new THREE.MeshStandardMaterial({
+      color: 0xb8bcc2, roughness: 0.4, metalness: 0.35,
+      emissive: 0x8a8f96, emissiveIntensity: 0.55,
+    });
+    knifeGroup.rotation.y = -0.35;
+    addBox(knifeGroup, 0.03, 0.095, 0.038, polymer, 0, -0.055, 0.03, 0.12); // 刀柄
+    addBox(knifeGroup, 0.07, 0.012, 0.05, darkMetal, 0, -0.008, 0.0); // 护手
+    addBox(knifeGroup, 0.008, 0.045, 0.18, bladeMat, 0, 0.014, -0.12); // 刀身
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.05, 4), bladeMat);
+    tip.rotation.x = -Math.PI / 2;
+    tip.rotation.y = Math.PI / 4;
+    tip.scale.set(0.3, 1, 1);
+    tip.position.set(0, 0.014, -0.235);
+    knifeGroup.add(tip);
+    addBox(knifeGroup, 0.009, 0.007, 0.16, bladeMat, 0, -0.006, -0.12); // 刀刃高光
+  })();
 
   // ---------- 双手：战术手套，枪身的子级，跟随一切枪身运动 ----------
   const rightHand = new THREE.Group();
@@ -379,11 +544,29 @@ export function createGun({ camera, rifleModel = null }) {
     bandageT: 0, // 包扎缠绕摆动计时
     flashLife: 0,
     timeSinceShot: 99,
+    swingT: -1, // 挥刀进度：-1 = 未挥刀，0..1 = 挥刀动画
   };
 
-  // 后坐力数值与 v0.1 完全一致（Ryan 已验“可以”，不动）。
+  // 射击后坐力：步枪数值与 v0.1 完全一致（Ryan 已验“可以”，不动）；
+  // 手枪用独立的轻量数值；刀不走 fire（挥刀用 swing）。
   function fire(aiming) {
+    if (currentWeapon === 'knife') return;
     const k = aiming ? 0.7 : 1;
+    if (currentWeapon === 'pistol') {
+      state.recoilPitch += (0.007 + Math.random() * 0.004) * k;
+      state.recoilYaw += (Math.random() - 0.5) * 0.0035 * k;
+      state.climb = Math.min(state.climb + 0.0015 * k, 0.03);
+      state.bloom = Math.min(state.bloom + (aiming ? 0.008 : 0.014), 0.06);
+      state.kickZ = Math.min(state.kickZ + 0.025, 0.05);
+      state.kickRot = Math.min(state.kickRot + 0.035, 0.08);
+      state.timeSinceShot = 0;
+      state.flashLife = 0.04;
+      flash.visible = true;
+      flash.material.rotation = Math.random() * Math.PI;
+      flash.scale.setScalar(0.5 + Math.random() * 0.3);
+      flashLight.intensity = 10;
+      return;
+    }
     state.recoilPitch += (0.01 + Math.random() * 0.006) * k;
     state.recoilYaw += (Math.random() - 0.5) * 0.005 * k;
     state.climb = Math.min(state.climb + 0.0022 * k, 0.05);
@@ -398,6 +581,13 @@ export function createGun({ camera, rifleModel = null }) {
     flashLight.intensity = 14;
   }
 
+  // 挥刀：开始一次 0.3s 的横劈动画；挥刀中再次触发返回 false（由冷却控制）。
+  function swing() {
+    if (currentWeapon !== 'knife' || state.swingT >= 0) return false;
+    state.swingT = 0;
+    return true;
+  }
+
   function update(dt, aiming) {
     state.timeSinceShot += dt;
     const fastDecay = Math.exp(-9 * dt);
@@ -408,7 +598,8 @@ export function createGun({ camera, rifleModel = null }) {
     state.kickZ *= Math.exp(-11 * dt);
     state.kickRot *= Math.exp(-11 * dt);
 
-    const adsTarget = aiming ? 1 : 0;
+    // 刀没有机瞄：机瞄输入直接忽略，ads 恒为 0。
+    const adsTarget = aiming && WEAPON_STATS[currentWeapon].canAds ? 1 : 0;
     state.ads += (adsTarget - state.ads) * Math.min(1, dt * 12);
     const dipTarget = state.reloading ? 1 : 0;
     state.reloadDip += (dipTarget - state.reloadDip) * Math.min(1, dt * 8);
@@ -420,10 +611,24 @@ export function createGun({ camera, rifleModel = null }) {
     const bp = smoothstep(state.bandagePose);
     state.bandageT += dt;
 
-    group.position.lerpVectors(HIP_POS, adsPos, state.ads);
+    const wp = POSE[currentWeapon];
+    group.position.lerpVectors(wp.hip, wp.ads, state.ads);
     group.position.z += state.kickZ;
     group.position.y -= state.reloadDip * 0.1;
     group.rotation.x = state.kickRot + state.reloadDip * 0.55;
+    // 挥刀动画：从右上向左下横劈（旋转 + 横移），0.3s 内完成，结束后归位。
+    // swingRotZ 在包扎姿态赋值之后再叠加（包扎那行会重写 rotation.z）。
+    let swingRotZ = 0;
+    if (state.swingT >= 0) {
+      state.swingT += dt / WEAPON_STATS.knife.swingTime;
+      const ph = easeOutCubic(Math.min(1, state.swingT));
+      swingRotZ = 0.5 - 1.0 * ph;
+      group.rotation.y = -0.35 + 0.7 * ph;
+      group.position.x += -0.06 + 0.16 * ph;
+      if (state.swingT >= 1) state.swingT = -1;
+    } else {
+      group.rotation.y = 0;
+    }
     // 包扎姿态与换弹姿态不同：枪身向中心靠拢、下沉、轻微上倾 + 内扣，
     // 读作“双手凑到一起处理伤口”，而不是换弹的“枪身大角度上翻”。
     // 下沉量 0.02 是取景框量出来的：再沉，持绷带的左手就贴着下边缘出画
@@ -431,7 +636,7 @@ export function createGun({ camera, rifleModel = null }) {
     group.position.x -= bp * 0.06;
     group.position.y -= bp * 0.02;
     group.rotation.x += bp * 0.22;
-    group.rotation.z = bp * 0.16;
+    group.rotation.z = bp * 0.16 + swingRotZ;
 
     // 换弹分段动画：弹匣落下/装回 + 拉机柄 + 左手下探（右手始终握把）。
     // 与包扎姿态互斥：换弹分支里不碰包扎量，包扎分支里弹匣/拉机柄归位。
@@ -460,8 +665,8 @@ export function createGun({ camera, rifleModel = null }) {
       else if (rp < 0.6) handK = 1;
       else handK = Math.max(0, 1 - (rp - 0.6) / 0.25);
       handK = smoothstep(handK);
-      leftHand.position.y = leftHandBase.y - 0.085 * handK;
-      leftHand.position.z = leftHandBase.z + 0.14 * handK;
+      leftHand.position.y = wp.leftHand.y - 0.085 * handK;
+      leftHand.position.z = wp.leftHand.z + 0.14 * handK;
       leftHand.rotation.x = 0.5 * handK;
       bandageStrip.visible = false;
     } else {
@@ -477,9 +682,9 @@ export function createGun({ camera, rifleModel = null }) {
       // （第一版手在机匣正后方只露个边；第二版 NDC y -0.95 几乎出画）。
       const wob = Math.sin(state.bandageT * Math.PI * 4);
       const wob2 = Math.sin(state.bandageT * Math.PI * 4 + Math.PI / 2);
-      leftHand.position.x = leftHandBase.x + bp * -0.055;
-      leftHand.position.y = leftHandBase.y + bp * (0.05 + wob * 0.006);
-      leftHand.position.z = leftHandBase.z + bp * (0.30 + wob2 * 0.008);
+      leftHand.position.x = wp.leftHand.x + bp * -0.055;
+      leftHand.position.y = wp.leftHand.y + bp * (0.05 + wob * 0.006);
+      leftHand.position.z = wp.leftHand.z + bp * (0.30 + wob2 * 0.008);
       leftHand.rotation.x = bp * (0.4 + wob * 0.12);
       leftHand.rotation.z = bp * wob2 * 0.18;
       bandageStrip.visible = bp > 0.02;
@@ -497,9 +702,45 @@ export function createGun({ camera, rifleModel = null }) {
   }
 
   // 当前总散布（弧度）：基础散布 + 射击积累，机瞄时大幅缩小。
+  // 手枪基础散布更大（短枪管，Ryan 规格要求）。
   function getSpread() {
     const factor = 1 - 0.65 * state.ads;
-    return (0.0035 + state.bloom) * factor;
+    const base = currentWeapon === 'pistol' ? 0.006 : 0.0035;
+    return (base + state.bloom) * factor;
+  }
+
+  // 切换武器：子组可见性 + 锚点/双手位置 + 动画状态复位。
+  // 换弹/包扎状态由主循环在切换前取消，这里再兜底复位一次。
+  function setWeapon(name) {
+    if (!POSE[name] || name === currentWeapon) return;
+    currentWeapon = name;
+    rifleGroup.visible = name === 'rifle';
+    pistolGroup.visible = name === 'pistol';
+    knifeGroup.visible = name === 'knife';
+    const wp = POSE[name];
+    muzzle.position.copy(wp.muzzle);
+    ejectPort.position.copy(wp.eject);
+    flash.position.copy(wp.muzzle);
+    flashLight.position.copy(wp.muzzle);
+    flash.visible = false;
+    flashLight.intensity = 0;
+    rightHand.position.copy(wp.rightHand);
+    leftHand.position.copy(wp.leftHand);
+    leftHand.rotation.set(0, 0, 0);
+    state.swingT = -1;
+    state.reloading = false;
+    state.reloadProgress = -1;
+    state.bandaging = false;
+    state.bandagePose = 0;
+    state.bloom = 0;
+  }
+
+  function getWeapon() {
+    return currentWeapon;
+  }
+
+  function isSwinging() {
+    return state.swingT >= 0;
   }
 
   function getRecoil() {
@@ -552,6 +793,7 @@ export function createGun({ camera, rifleModel = null }) {
     group,
     muzzle,
     fire,
+    swing,
     update,
     getSpread,
     getRecoil,
@@ -562,6 +804,9 @@ export function createGun({ camera, rifleModel = null }) {
     setBandaging,
     getBandagePose,
     getLeftHandNdc,
+    setWeapon,
+    getWeapon,
+    isSwinging,
     muzzleWorldPosition,
     ejectionWorldPosition,
   };

@@ -2,7 +2,7 @@
 // 触屏是第一公民：iPad 上只用触摸就能完成全部操作。
 // 键位、触屏灵敏度、机瞄方式等来自 settings.js，可由玩家自定义。
 
-import { DEFAULT_KEYS } from './settings.js?v=0.11';
+import { DEFAULT_KEYS } from './settings.js?v=0.12';
 
 export function createControls({ canvas, elements, settings }) {
   const isTouch =
@@ -49,7 +49,7 @@ export function createControls({ canvas, elements, settings }) {
   function arrowFree(code) {
     const k = boundKeys();
     return k.jump !== code && k.reload !== code && k.fireMode !== code &&
-      k.reset !== code && k.sprint !== code && k.bandage !== code;
+      k.reset !== code && k.sprint !== code && k.bandage !== code && k.weaponCycle !== code;
   }
   window.addEventListener('keydown', (e) => {
     if (e.repeat) return;
@@ -60,6 +60,11 @@ export function createControls({ canvas, elements, settings }) {
     if (e.code === k.reload) emit('reload');
     if (e.code === k.fireMode) emit('toggleMode');
     if (e.code === k.reset) emit('reset');
+    if (e.code === k.weaponCycle) emit('weaponCycle');
+    // 数字键 1/2/3 直选武器：固定键位，不可重绑（与 Q 循环键互补）。
+    if (e.code === 'Digit1') emit('weaponSelect', 0);
+    if (e.code === 'Digit2') emit('weaponSelect', 1);
+    if (e.code === 'Digit3') emit('weaponSelect', 2);
     if (e.code === k.jump) {
       e.preventDefault(); // 防止空格激活获得焦点的按钮
       emit('jump');
@@ -321,6 +326,8 @@ export function createControls({ canvas, elements, settings }) {
   bindTap(elements.btnMode, () => emit('toggleMode'));
   bindTap(elements.btnReset, () => emit('reset'));
   bindTap(elements.btnJump, () => emit('jump'));
+  // 武器切换键（图标键）：点按循环 步枪 → 手枪 → 战术刀。
+  bindTap(elements.btnWeapon, () => emit('weaponCycle'));
 
   // 包扎键：触屏/鼠标点按开关式。点按后发 'bandageToggle' 事件带上新状态，
   // 主循环据此给无失血时的空按一次反馈（不能让按钮悄悄没反应）。

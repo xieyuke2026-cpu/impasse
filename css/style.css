@@ -223,7 +223,13 @@ body.home #damage-log,
 body.home #crosshair,
 body.home #hitmarker,
 body.home #hitmarker-label,
-body.home #touch-ui { display: none !important; }
+body.home #touch-ui,
+body.home #tdm-score,
+body.home #kill-feed,
+body.home #buff-banner,
+body.home #buff-indicator,
+body.home #respawn-overlay,
+body.home #match-overlay { display: none !important; }
 
 #damage-log {
   position: fixed;
@@ -261,6 +267,140 @@ body.home #touch-ui { display: none !important; }
   pointer-events: none;
 }
 #toast.show { opacity: 1; }
+
+/* ---------- 团队死斗 HUD ---------- */
+/* 比分条只在团队死斗显示；射击计分行与重置靶子键只在靶场/街区显示。 */
+#tdm-score,
+#kill-feed,
+#buff-indicator { display: none; }
+body.tdm #tdm-score { display: block; }
+body.tdm #kill-feed { display: block; }
+body.tdm #btn-reset { display: none; }
+body.tdm #score-line,
+body.tdm #zone-line { display: none; }
+body.tdm #damage-log { top: 300px; }
+#tdm-score {
+  position: fixed;
+  left: 50%;
+  top: 12px;
+  transform: translateX(-50%);
+  z-index: 10;
+  font-family: Rajdhani, sans-serif;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
+  pointer-events: none;
+  white-space: nowrap;
+}
+#tdm-blue { color: #7aa8ff; }
+#tdm-red { color: #ff7a6a; }
+.tdm-sep { color: #fff; margin: 0 6px; }
+.tdm-target { font-size: 16px; color: #cfcfcf; margin-left: 6px; }
+#buff-indicator.show {
+  display: block;
+  position: fixed;
+  left: 50%;
+  top: 54px;
+  transform: translateX(-50%);
+  z-index: 10;
+  font-size: 13px;
+  font-weight: bold;
+  padding: 4px 12px;
+  border-radius: 12px;
+  pointer-events: none;
+}
+#buff-indicator.blue { background: rgba(58, 123, 255, 0.35); border: 1px solid #7aa8ff; color: #dbe8ff; }
+#buff-indicator.red { background: rgba(255, 74, 58, 0.35); border: 1px solid #ff7a6a; color: #ffe0dc; }
+#kill-feed {
+  position: fixed;
+  right: 20px;
+  top: 118px;
+  width: 300px;
+  z-index: 10;
+  pointer-events: none;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.kill-entry {
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 3px;
+  padding: 5px 8px;
+  margin-bottom: 5px;
+  text-align: right;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  transition: opacity 0.6s;
+}
+.kill-entry.fade { opacity: 0; }
+.kf-blue { color: #7aa8ff; font-weight: bold; }
+.kf-red { color: #ff7a6a; font-weight: bold; }
+.kf-you { color: #ffd75e; font-weight: bold; }
+.kf-arrow { color: #999; margin: 0 4px; }
+.kf-note { color: #cfcfcf; }
+#buff-banner {
+  position: fixed;
+  left: 50%;
+  top: 30%;
+  transform: translateX(-50%);
+  z-index: 12;
+  font-size: 30px;
+  font-weight: bold;
+  color: #ffd75e;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.95);
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+  white-space: nowrap;
+}
+#buff-banner.show { opacity: 1; }
+#respawn-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  text-align: center;
+}
+#respawn-overlay.show { display: flex; }
+#respawn-text { font-size: 24px; font-weight: bold; color: #ff7a6a; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9); }
+#respawn-timer { font-size: 18px; color: #fff; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9); }
+#match-title.win { color: #ffd75e; }
+#match-title.lose { color: #ff7a6a; }
+/* 防具耐久格：只在团队死斗显示，紧贴弹药 HUD */
+#gear-pips { display: none; margin-top: 6px; }
+body.tdm #gear-pips { display: block; }
+.gear-row { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+.gear-label { font-size: 12px; color: #cfcfcf; width: 44px; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9); }
+.gear-seg {
+  width: 18px;
+  height: 8px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+.gear-seg.on { background: #8fb8ff; border-color: #8fb8ff; }
+.gear-row.destroyed .gear-label { color: #ff7a6a; }
+.gear-row.destroyed .gear-seg { border-color: rgba(255, 90, 77, 0.6); }
+/* 武器槽：三种武器，当前武器金色边框 */
+#weapon-slots { display: flex; gap: 6px; margin-top: 8px; }
+.weapon-slot {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #cfcfcf;
+}
+.weapon-slot svg { width: 26px; height: 18px; display: block; }
+.weapon-slot em { font-style: normal; font-size: 11px; color: #999; }
+.weapon-slot.current { border-color: #ffd75e; color: #ffd75e; }
 
 /* ---------- 触屏控制 ---------- */
 #touch-ui { display: none; }
@@ -352,6 +492,8 @@ body.touch #hud-bl { left: 20px; bottom: 170px; }
 #btn-mode { right: calc(134px * var(--btn-scale, 1)); bottom: calc(140px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); }
 #btn-jump { right: calc(40px * var(--btn-scale, 1)); bottom: calc(250px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); }
 #btn-bandage { right: calc(134px * var(--btn-scale, 1)); bottom: calc(250px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); border-color: rgba(143, 227, 136, 0.7); }
+/* 武器切换键：跳跃键上方一格，图标为上下交换箭头，点按循环切换武器 */
+#btn-weapon { right: calc(40px * var(--btn-scale, 1)); bottom: calc(354px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); }
 
 /* 摇杆在右：摇杆区/视角区与按钮组整体镜像，弹药 HUD 让到右侧 */
 body.joystick-right #joystick-zone { left: auto; right: 0; }
@@ -363,6 +505,7 @@ body.joystick-right #btn-reload { right: auto; left: calc(40px * var(--btn-scale
 body.joystick-right #btn-mode { right: auto; left: calc(134px * var(--btn-scale, 1)); }
 body.joystick-right #btn-jump { right: auto; left: calc(40px * var(--btn-scale, 1)); }
 body.joystick-right #btn-bandage { right: auto; left: calc(134px * var(--btn-scale, 1)); }
+body.joystick-right #btn-weapon { right: auto; left: calc(40px * var(--btn-scale, 1)); }
 
 /* 布局编辑：强制显示触屏按钮（桌面端也能调），按钮可拖拽 */
 body.layout-edit #touch-ui { display: block; }

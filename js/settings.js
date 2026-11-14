@@ -14,6 +14,7 @@ export const DEFAULT_KEYS = {
   fireMode: 'KeyV',
   reset: 'KeyT',
   bandage: 'KeyB',
+  weaponCycle: 'KeyQ',
 };
 
 export const KEY_ACTIONS = [
@@ -27,6 +28,7 @@ export const KEY_ACTIONS = [
   { id: 'fireMode', label: '切换单发/连发' },
   { id: 'reset', label: '重置靶子' },
   { id: 'bandage', label: '包扎（按住）' },
+  { id: 'weaponCycle', label: '切换武器（循环）' },
 ];
 
 const DEFAULTS = {
@@ -47,6 +49,7 @@ const LAYOUT_BUTTONS = [
   { id: 'mode', el: 'btn-mode' },
   { id: 'jump', el: 'btn-jump' },
   { id: 'bandage', el: 'btn-bandage' },
+  { id: 'weapon', el: 'btn-weapon' },
 ];
 
 function clamp(v, min, max) { return Math.min(max, Math.max(min, v)); }

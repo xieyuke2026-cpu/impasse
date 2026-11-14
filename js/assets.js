@@ -9,13 +9,13 @@
 // 全是 base64 文本（<原名>.b64，见 tools/encode-assets.mjs）。这里 fetch 到
 // 文本后解码回 ArrayBuffer 再交给 Three.js / FontFace。解码是分块 atob，
 // 不会因为 ~1.5MB 的 HDRI .b64 产生巨型中间字符串。
-// 缓存策略：素材 URL 带 ?v=0.11，与模块版本查询串同一版本号，素材更新即换地址。
+// 缓存策略：素材 URL 带 ?v=0.12，与模块版本查询串同一版本号，素材更新即换地址。
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 
-export const ASSETS_VERSION = '0.11';
+export const ASSETS_VERSION = '0.12';
 const BASE = 'assets/';
 const av = (p) => `${BASE}${p}.b64?v=${ASSETS_VERSION}`;
 
@@ -131,6 +131,7 @@ const MODEL_FILES = {
   'car-truck': 'models/car-kit/truck.glb',
   // 武器与角色（贴图内嵌/无贴图，不走 colormap）
   'rifle': 'models/weapons/rifle-quaternius.glb',
+  'pistol': 'models/weapons/pistol-kenney.glb',
   'sniper': 'models/weapons/sniper-kenney.glb',
   'soldier': 'models/characters/soldier-male.glb',
   'soldier-blue': 'models/characters/soldier-male-blue.glb',
@@ -213,7 +214,8 @@ function parseGltf(loader, buffer, resourcePath) {
 
 // 加载全部素材。onProgress(done, total) 供主页显示进度；
 // 8 秒全局超时：超时后用已加载的部分 + 回退继续，绝不等死。
-// 返回：{ models: Map, failedModels: Set, textures: {...}, hdr: Texture|null,
+// 返回：{ models: Map, animations: Map（士兵模型的 clip 列表，供机器人 AI 用）,
+//         failedModels: Set, textures: {...}, hdr: Texture|null,
 //         fontsLoaded: number, timedOut: bool }
 export async function loadAssets({ onProgress = null, timeoutMs = 8000 } = {}) {
   const jobs = [];
@@ -256,6 +258,7 @@ export async function loadAssets({ onProgress = null, timeoutMs = 8000 } = {}) {
   const rgbeLoader = new RGBELoader();
 
   const models = new Map();
+  const animations = new Map();
   const failedModels = new Set();
   for (const [key, file] of Object.entries(MODEL_FILES)) {
     jobs.push(
@@ -264,7 +267,12 @@ export async function loadAssets({ onProgress = null, timeoutMs = 8000 } = {}) {
         const resourcePath = kit ? `__kit__/${kit}/` : '';
         const buf = await fetchAssetBytes(file);
         const gltf = await parseGltf(gltfLoader, buf, resourcePath);
-        if (key === 'soldier' || key === 'soldier-blue') poseSoldier(gltf.scene, gltf.animations);
+        if (key === 'soldier' || key === 'soldier-blue') {
+          poseSoldier(gltf.scene, gltf.animations);
+          // 保留 clip：机器人 AI 要在克隆体上播 Walk/Run/Shoot/Death。
+          // 冻结姿态不受影响——mixer 播放时会接管骨骼变换。
+          animations.set(key, gltf.animations);
+        }
         models.set(key, gltf.scene);
       })()
         .catch(() => { failedModels.add(key); })
@@ -324,5 +332,5 @@ export async function loadAssets({ onProgress = null, timeoutMs = 8000 } = {}) {
   ]);
   // 超时后未完成的任务仍在后台跑：它们都自带 catch，不会产生未处理 rejection；
   // 完成后写入的 models/textures 不会被使用（游戏已按回退建成），无害。
-  return { models, failedModels, textures, hdr, fontsLoaded, timedOut };
+  return { models, animations, failedModels, textures, hdr, fontsLoaded, timedOut };
 }

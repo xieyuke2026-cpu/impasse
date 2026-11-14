@@ -1,23 +1,25 @@
-// IMPASSE v0.11 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
+// IMPASSE v0.12 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
 // 渲染：Three.js（CDN）；输入：Pointer Lock + 触屏；毁伤：damage.js 纯函数；
-// 失血：bleeding.js 纯函数（假人 + 玩家）；记录：records.js 纯函数 + localStorage。
-// 两张地图（靶场 + 城市街区）同场建造、按组切换可见性；记录两张图共用。
+// 失血：bleeding.js 纯函数（假人 + 玩家）；防具：armor.js 纯函数（包在毁伤
+// 判定之前）；比赛：match.js 纯函数（计分 + 背水一战）；记录：records.js。
+// 两张地图（靶场 + 城市街区）同场建造、按组切换可见性；团队死斗复用街区
+// 环境，靶子隐藏、机器人上场。记录两张图共用，死斗胜负单独记。
 // 素材（GLB/PBR/HDRI）由 assets.js 加载，加载完成（或超时回退）后才建造
 // 地图与枪；任何一件素材失败都走程序化/纯色回退，游戏不受影响。
-// 缓存策略：全部本地模块带 ?v=0.11 查询串，版本升级即换地址，避免新旧文件混版。
+// 缓存策略：全部本地模块带 ?v=0.12 查询串，版本升级即换地址，避免新旧文件混版。
 
 import * as THREE from 'three';
-import { createControls } from './controls.js?v=0.11';
-import { createGun } from './gun.js?v=0.11';
-import { createTargets, RANGE_LAYOUT, STREET_LAYOUT } from './targets.js?v=0.11';
-import { createRange } from './range.js?v=0.11';
-import { createStreet } from './street.js?v=0.11';
-import { createHud } from './hud.js?v=0.11';
-import { createAudio } from './audio.js?v=0.11';
-import { createSettingsStore, initSettingsPanel, KEY_ACTIONS, keyLabel } from './settings.js?v=0.11';
-import { createRecordsStore } from './records.js?v=0.11';
-import { loadAssets } from './assets.js?v=0.11';
-import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.11';
+import { createControls } from './controls.js?v=0.12';
+import { createGun, WEAPON_STATS, WEAPON_ORDER } from './gun.js?v=0.12';
+import { createTargets, RANGE_LAYOUT, STREET_LAYOUT } from './targets.js?v=0.12';
+import { createRange } from './range.js?v=0.12';
+import { createStreet } from './street.js?v=0.12';
+import { createHud } from './hud.js?v=0.12';
+import { createAudio } from './audio.js?v=0.12';
+import { createSettingsStore, initSettingsPanel, KEY_ACTIONS, keyLabel } from './settings.js?v=0.12';
+import { createRecordsStore } from './records.js?v=0.12';
+import { loadAssets } from './assets.js?v=0.12';
+import { evaluateHit, evaluateRicochet, ZONE_LABELS } from './damage.js?v=0.12';
 import {
   createBleedState,
   rollBleed,
@@ -32,14 +34,16 @@ import {
   bleedSpeedFactor,
   bleedVignetteOpacity,
   bleedSwayAmplitude,
-} from './bleeding.js?v=0.11';
+} from './bleeding.js?v=0.12';
+import { createGearState, applyGearHit, gearStatus, GEAR_LABELS } from './armor.js?v=0.12';
+import { createMatch, recordKill, buffModifiers, WIN_SCORE } from './match.js?v=0.12';
+import { createBotManager } from './bots.js?v=0.12';
 
 // 唯一版本号：由脚本写进主页的版本标签，显示的版本即脚本版本，
-// 旧脚本缓存不会谎报新版本（HTML 里的 v0.9 只是加载前的占位文案）。
-const VERSION = '0.11';
+// 旧脚本缓存不会谎报新版本（HTML 里的占位文案只是加载前显示）。
+const VERSION = '0.12';
 
-const MAG_SIZE = 30;
-const RELOAD_TIME = 1.8;
+const RELOAD_TIME = 1.8; // 步枪换弹时长（WEAPON_STATS.rifle.reloadTime 的镜像，初始值用）
 const AUTO_INTERVAL = 0.1; // 600 RPM
 const SEMI_INTERVAL = 0.14;
 const EYE_HEIGHT = 1.6;
@@ -56,6 +60,9 @@ const GRAVITY = 12; // m/s²
 const JUMP_VELOCITY = 5.8; // m/s
 const BANDAGE_TIME = 2.5; // 包扎读条（秒）：键盘按住 B / 触屏点按包扎键开关；开火打断
 const COLLAPSE_FADE_TIME = 0.9; // 倒地黑场时长（秒），黑满后重生
+const RESPAWN_TIME = 3; // 团队死斗阵亡后重生倒计时（秒）
+const KNIFE_DAMAGE_SCALE = 2.0; // 战术刀毁伤倍率：重型部位打击，两刀胸基本倒地
+const BLEED_CREDIT_WINDOW = 15; // 玩家失血倒地时，15 秒内的最后攻击者记击杀
 const COYOTE_TIME = 0.08; // 土狼时间：离地后 0.08s 内仍可起跳
 const JUMP_BUFFER = 0.1; // 输入缓冲：落地前 0.1s 内的跳跃输入仍生效
 // 头部摆动幅度上限（Ryan 反馈“抖动太小”后加大）：垂直 0.045m（峰峰值 0.09m）、
@@ -130,17 +137,44 @@ let colliders = [];
 let gun = null;
 let initialized = false;
 let assetReport = null; // 素材加载结果摘要（调试钩子读取）
+// 团队死斗：机器人管理器（首场比赛开始时创建）与比赛状态（每场比赛新建）。
+let botManager = null;
+let tdm = null;
+// 机器人/比赛的素材（init 存下，首场比赛创建 botManager 时用）。
+let soldierModels = null;
+let soldierAnimations = null;
+
+// 射线与碰撞集合按模式取舍：死斗时街区靶子隐藏，靶子的碰撞体与命中网格
+// 也要排除（否则隐形靶子会挡路、吃子弹），换成机器人的网格与碰撞体。
+function refreshHitSets() {
+  if (activeMap.isTdm && botManager) {
+    allHitMeshes = [...streetEnv.hitMeshes, ...botManager.hitMeshes];
+    colliders = [...streetEnv.colliders, ...botManager.botColliders];
+  } else {
+    allHitMeshes = [...activeMap.env.hitMeshes, ...activeMap.targets.hitMeshes];
+    colliders = [...activeMap.env.colliders, ...activeMap.targets.colliders];
+  }
+}
 function setActiveMap(id) {
   activeMapId = id;
   activeMap = MAPS[id];
-  for (const m of Object.values(MAPS)) m.env.group.visible = m === activeMap;
-  allHitMeshes = [...activeMap.env.hitMeshes, ...activeMap.targets.hitMeshes];
-  colliders = [...activeMap.env.colliders, ...activeMap.targets.colliders];
+  // 死斗与街区共用同一个环境组：按环境组切换可见性，不能按 MAPS 条目
+  // （两条目同组会互相覆盖 visible）。
+  rangeEnv.group.visible = activeMap.env === rangeEnv;
+  streetEnv.group.visible = activeMap.env === streetEnv;
+  // 死斗时隐藏街区靶子（并复位，清除残留血滴）；切回街区时恢复显示。
+  streetTargets.setVisible(!activeMap.isTdm);
+  if (activeMap.isTdm) streetTargets.reset();
+  refreshHitSets();
+  document.body.classList.toggle('tdm', !!activeMap.isTdm);
   scene.background = activeMap.env.env.background;
   scene.fog = activeMap.env.env.fog;
   // 环境光与曝光按地图走：街区用 HDRI 环境贴图 + 曝光 1.0，靶场无环境光 + 1.05。
   scene.environment = activeMap.env.env.environment || null;
   renderer.toneMappingExposure = activeMap.env.env.exposure ?? 1.05;
+}
+function isTdmActive() {
+  return !!(activeMap && activeMap.isTdm && tdm);
 }
 
 const controls = createControls({
@@ -159,6 +193,7 @@ const controls = createControls({
     btnReset: document.getElementById('btn-reset'),
     btnJump: document.getElementById('btn-jump'),
     btnBandage: document.getElementById('btn-bandage'),
+    btnWeapon: document.getElementById('btn-weapon'),
   },
 });
 initSettingsPanel({
@@ -266,10 +301,52 @@ function resolveCollisions(pos) {
   }
 }
 // ---------- 玩家受伤 / 失血 / 包扎 / 倒地 ----------
-// 玩家受伤接口：未来的敌人命中玩家时调用。当前版本只有设置里的“模拟受伤”
-// 测试钩子调用它。severity 为命中严重度 0..1（由毁伤模型给出）。
-function playerTakeHit(zone, severity = 0.4) {
+// 玩家受伤接口：机器人命中玩家时调用（靶场/街区只有设置里的“模拟受伤”
+// 测试钩子调用它）。severity 为命中严重度 0..1（由毁伤模型给出）。
+// 团队死斗：防具先挡（armor.js 包在毁伤判定之前，damage.js/bleeding.js
+// 原样不动）→ 模块完整度 → 失血；头/胸模块归零即阵亡。靶场/街区保持
+// 旧行为（只有失血，没有模块与防具）。
+function playerTakeHit(zone, severity = 0.4, attacker = null) {
   const z = ZONE_LABELS[zone] ? zone : 'abdomen';
+  if (isTdmActive()) {
+    if (!tdm.playerAlive || tdm.matchOver) return;
+    const gearRes = applyGearHit(tdm.playerGear, z, severity, Math.random());
+    const finalSeverity = gearRes.severity;
+    if (gearRes.gearHit) {
+      const gearName = GEAR_LABELS[gearRes.gearHit];
+      if (gearRes.penetrated) {
+        hud.addLog(`击穿！你的${gearName}被击穿，${ZONE_LABELS[z]}受到全额伤害`, 'crit');
+      } else if (gearRes.destroyed) {
+        hud.addLog(`你的${gearName}被摧毁！`, 'crit');
+      } else {
+        hud.addLog(`${gearName}挡下了大部分伤害（耐久 ${Math.round(gearRes.remaining)}%）`);
+      }
+      const st = gearStatus(tdm.playerGear);
+      hud.setGear(st.armor, st.helmet);
+    }
+    tdm.playerIntegrity[z] = Math.max(0, tdm.playerIntegrity[z] - finalSeverity);
+    bloodLoss += finalSeverity * IMMEDIATE_BLEED_FACTOR;
+    const r = rollBleed(playerBleed, z, Math.random());
+    if (r.triggered && !r.refreshed) {
+      hud.addLog(`你${ZONE_LABELS[z]}中弹，开始失血！`, 'crit');
+      hud.toast('失血！快包扎止血');
+    } else if (r.triggered) {
+      hud.addLog(`你${ZONE_LABELS[z]}再次中弹，失血持续`, 'crit');
+    } else {
+      hud.addLog(`你${ZONE_LABELS[z]}中弹（未触发失血）`);
+    }
+    if (attacker) {
+      tdm.playerLastAttacker = attacker;
+      tdm.playerLastAttackerT = performance.now() / 1000;
+    }
+    updateBleedHud();
+    // 头/胸模块归零即阵亡（与机器人同一规则；evaluateHit 的 incapacitated
+    // 不直接杀玩家——5 个机器人围攻时一发爆头即死太苛刻）。
+    if (tdm.playerIntegrity.head <= 0 || tdm.playerIntegrity.chest <= 0) {
+      tdmDie(attacker);
+    }
+    return;
+  }
   bloodLoss += severity * IMMEDIATE_BLEED_FACTOR;
   const r = rollBleed(playerBleed, z, Math.random());
   if (r.triggered && !r.refreshed) {
@@ -281,6 +358,157 @@ function playerTakeHit(zone, severity = 0.4) {
     hud.addLog(`你${ZONE_LABELS[z]}中弹（未触发失血）`);
   }
   updateBleedHud();
+}
+
+// ---------- 团队死斗：记分 / 阵亡 / 重生 / 结算 ----------
+// 一次击杀记分：更新比分与播报，处理背水一战触发/结束与比赛胜利。
+// killer/victim 为 { name, team, isPlayer }，killer 为 null 表示无击杀者
+// （失血倒地且无人记功），只播报不记分。比赛已结束时不再记分。
+function recordTdmKill(killerTeam, killer, victim) {
+  if (!isTdmActive() || tdm.match.winner) return;
+  const events = recordKill(tdm.match, killerTeam);
+  hud.addKillFeed(killer, victim);
+  hud.setTdmScore(tdm.match.scores.blue, tdm.match.scores.red);
+  for (const e of events) {
+    if (e.type === 'buffTriggered') {
+      const teamName = e.team === 'blue' ? '蓝队' : '红队';
+      hud.showBuffBanner(`背水一战！${teamName}失血效果 -5%，速度 +5%`);
+      hud.setBuffIndicator(true, e.team);
+      hud.addLog(`背水一战触发：${teamName}获得增益（失血 -5%，速度 +5%）`, 'ricochet');
+    } else if (e.type === 'buffEnded') {
+      hud.setBuffIndicator(false, null);
+      hud.addLog('背水一战结束', 'ricochet');
+    } else if (e.type === 'win') {
+      endMatch(e.team === 'blue');
+    }
+  }
+}
+
+// 机器人阵亡回调（bots.js）：killer 为攻击者描述或 null。
+function onBotKill({ killer, victim }) {
+  if (!isTdmActive()) return;
+  if (killer) {
+    recordTdmKill(killer.team, killer, victim);
+  } else {
+    hud.addKillFeed(null, victim);
+  }
+}
+
+// 机器人命中玩家回调（bots.js）：severity 已乘机器人毁伤倍率。
+function onBotHitPlayer(hit) {
+  playerTakeHit(hit.zone, hit.severity, hit.attacker);
+}
+
+// 玩家阵亡：记分（击杀者队伍）、重生倒计时浮层、失血清零。
+// killer 为直接击杀者；失血倒地（killer 为 null）时按最后攻击者记功。
+function tdmDie(killer) {
+  if (!isTdmActive() || !tdm.playerAlive || tdm.matchOver) return;
+  tdm.playerAlive = false;
+  cancelBandage();
+  if (reloading) {
+    reloading = false;
+    gun.setReloading(false);
+    hud.setReloading(false);
+  }
+  const now = performance.now() / 1000;
+  const credited = killer ||
+    (tdm.playerLastAttacker && now - tdm.playerLastAttackerT < BLEED_CREDIT_WINDOW
+      ? tdm.playerLastAttacker : null);
+  const victim = { name: '你', team: 'blue', isPlayer: true };
+  if (credited) {
+    recordTdmKill(credited.team, credited, victim);
+    hud.showRespawn(`你被${credited.team === 'red' ? '红队' : '蓝队'} ${credited.name} 击毙`);
+  } else {
+    hud.addKillFeed(null, victim);
+    hud.showRespawn('你失血过多，倒下了');
+  }
+  tdm.respawnT = RESPAWN_TIME;
+  hud.setRespawnTimer(tdm.respawnT);
+  // 阵亡即清零失血：倒地期间不再滴答，重生时满状态。
+  clearBleeds(playerBleed);
+  bloodLoss = 0;
+  updateBleedHud();
+  hud.setBleedVignette(0);
+}
+
+// 玩家重生：满血、崭新防具、失血清零、弹药补满、回蓝队出生点。
+function respawnTdmPlayer() {
+  respawnPlayer();
+  tdm.playerGear = createGearState();
+  tdm.playerIntegrity = { head: 1, chest: 1, abdomen: 1, arm: 1, leg: 1 };
+  tdm.playerAlive = true;
+  tdm.playerLastAttacker = null;
+  ammoByWeapon.rifle = WEAPON_STATS.rifle.magSize;
+  ammoByWeapon.pistol = WEAPON_STATS.pistol.magSize;
+  hud.hideRespawn();
+  hud.setGear(1, 1);
+  updateWeaponHud();
+}
+
+// 比赛结束：冻结交战、记胜负（只记一次）、结算浮层、退出指针锁定。
+function endMatch(won) {
+  if (!isTdmActive() || tdm.matchOver) return;
+  tdm.matchOver = true;
+  if (!tdm.recorded) {
+    tdm.recorded = true;
+    recordsStore.recordTdmMatch(won);
+    renderRecords();
+  }
+  if (botManager) botManager.setCombatEnabled(false);
+  hud.setBuffIndicator(false, null);
+  hud.hideRespawn();
+  hud.showMatchOverlay(won, tdm.match.scores.blue, tdm.match.scores.red);
+  hud.addLog(won ? `胜利！蓝队率先达到 ${WIN_SCORE} 分` : `惜败，红队率先达到 ${WIN_SCORE} 分`, 'ricochet');
+  if (document.exitPointerLock) document.exitPointerLock();
+}
+
+// 开始一场比赛：新建比赛状态、机器人全体上场、HUD 复位。
+// 机器人管理器首场比赛创建（需要街区环境与士兵模型），之后复用。
+function startMatch() {
+  if (!botManager) {
+    botManager = createBotManager({
+      parent: streetEnv.group,
+      soldierBlue: soldierModels.blue,
+      soldierRed: soldierModels.red,
+      animations: soldierAnimations,
+      colliders: streetEnv.colliders,
+      occluders: streetEnv.hitMeshes,
+      // 回调必须包在 callbacks 对象里（bots.js 只从 callbacks 解构）：
+      // 平铺传参会被静默丢弃，击杀记分/玩家受伤/曳光/远处枪声全断。
+      callbacks: {
+        onPlayerHit: onBotHitPlayer,
+        onKill: onBotKill,
+        spawnTracer,
+        playDistantShot: (dist) => audio.distantShot(dist),
+      },
+    });
+  }
+  tdm = {
+    match: createMatch(),
+    playerGear: createGearState(),
+    playerIntegrity: { head: 1, chest: 1, abdomen: 1, arm: 1, leg: 1 },
+    playerAlive: true,
+    respawnT: 0,
+    playerLastAttacker: null,
+    playerLastAttackerT: 0,
+    matchOver: false,
+    recorded: false,
+  };
+  streetTargets.setVisible(false);
+  streetTargets.reset();
+  botManager.setCombatEnabled(true);
+  botManager.spawnAll();
+  // spawnAll 先清掉上一场的机器人再重建（数组被换掉），所以必须在
+  // 重建之后再刷新射线/碰撞集合，否则集合里还是上一场已撤场的网格，
+  // 再来一局后子弹打不中机器人、机器人也不挡玩家。
+  refreshHitSets();
+  hud.setTdmScore(0, 0);
+  hud.clearKillFeed();
+  hud.setBuffIndicator(false, null);
+  hud.hideMatchOverlay();
+  hud.hideRespawn();
+  hud.setGear(1, 1);
+  hud.addLog(`团队死斗开始！先到 ${WIN_SCORE} 分获胜`);
 }
 
 function updateBleedHud() {
@@ -323,13 +551,50 @@ function respawnPlayer() {
 }
 
 let playing = false;
+let paused = false; // 暂停浮层显示时冻结局内逻辑（移动/射击/机器人/靶子）
 let startedAt = 0;
-let ammo = MAG_SIZE;
-let fireMode = 'auto';
+// 弹药按武器分开记（步枪 30 发 / 手枪 12 发），切换武器时各自保留余弹。
+let ammoByWeapon = { rifle: WEAPON_STATS.rifle.magSize, pistol: WEAPON_STATS.pistol.magSize };
+let currentWeapon = 'rifle';
+let fireMode = 'auto'; // 只对步枪有效：手枪恒单发，战术刀没有射击模式
 let reloading = false;
 let reloadEnd = 0;
+let reloadDuration = RELOAD_TIME; // 本次换弹总时长（按当前武器）
 let nextShotAt = 0;
 let prevFiring = false;
+let meleeReadyAt = 0; // 战术刀下一次可挥刀的时间（挥刀 0.3s + 0.05s 间隔）
+
+// 武器 HUD：弹药数（战术刀显示 —）+ 射击模式标签 + 武器槽高亮。
+function updateWeaponHud() {
+  if (currentWeapon === 'knife') {
+    hud.setAmmo('—', '');
+    hud.setFireMode('knife');
+  } else {
+    hud.setAmmo(ammoByWeapon[currentWeapon], '∞');
+    hud.setFireMode(currentWeapon === 'rifle' ? fireMode : 'semi');
+  }
+  hud.setWeaponSlots(currentWeapon);
+}
+
+// 切换武器：取消换弹/包扎（姿态不打架）、换视图模型、刷新 HUD。
+function switchWeapon(next) {
+  if (!WEAPON_ORDER.includes(next) || next === currentWeapon) return;
+  if (reloading) {
+    reloading = false;
+    gun.setReloading(false);
+    hud.setReloading(false);
+  }
+  cancelBandage();
+  currentWeapon = next;
+  gun.setWeapon(next);
+  updateWeaponHud();
+  audio.weaponSwitch();
+}
+
+function cycleWeapon() {
+  const i = WEAPON_ORDER.indexOf(currentWeapon);
+  switchWeapon(WEAPON_ORDER[(i + 1) % WEAPON_ORDER.length]);
+}
 
 const score = {
   shots: 0,
@@ -514,16 +779,18 @@ const _eject = new THREE.Vector3();
 
 function shoot(now) {
   lastShot = null; // 本发未命中假人时保持 null，不读上一发的旧值
-  if (ammo <= 0) {
+  const stats = WEAPON_STATS[currentWeapon];
+  if (ammoByWeapon[currentWeapon] <= 0) {
     audio.dryFire();
     startReload();
     return;
   }
-  ammo -= 1;
+  ammoByWeapon[currentWeapon] -= 1;
   score.shots += 1;
   const aiming = controls.state.aiming;
   gun.fire(aiming);
-  audio.shot();
+  if (currentWeapon === 'pistol') audio.pistolShot();
+  else audio.shot();
 
   // 散布：在镜头方向上加一个随机锥形偏移
   const spread = gun.getSpread();
@@ -583,12 +850,36 @@ function shoot(now) {
       energy,
       roll: Math.random(),
     });
+    evalResult.severity *= stats.damageScale; // 手枪毁伤低于步枪
     const res = activeMap.targets.applyDummyHit(obj, evalResult);
     score.hits += 1;
     score.zoneCounts[evalResult.zone] += 1;
     hud.showHitmarker(evalResult.zoneLabel);
     hud.addLog(res.log, evalResult.zone === 'head' ? 'crit' : '');
     if (res.incapacitated) hud.toast('目标失能！');
+    spawnImpact(_hitPoint, false);
+    audio.thud();
+    return;
+  }
+
+  if (surface.kind === 'bot' && botManager) {
+    // 机器人：与假人同一毁伤评估，防具/模块/失血由 bots.js 内部处理
+    // （applyPlayerHit 里先过防具再算模块，毁伤倍率在里面乘）。
+    const bot = obj.userData.bot;
+    const zone = botManager.zoneAtPoint(bot, _hitPoint) || obj.userData.zone || 'chest';
+    const evalResult = evaluateHit({
+      zone,
+      incidenceDeg,
+      rangeM,
+      energy,
+      roll: Math.random(),
+    });
+    const res = botManager.applyPlayerHit(bot, evalResult, stats.damageScale, player.pos);
+    score.hits += 1;
+    score.zoneCounts[evalResult.zone] += 1;
+    hud.showHitmarker(evalResult.zoneLabel);
+    hud.addLog(res.log, evalResult.zone === 'head' ? 'crit' : '');
+    if (res.killed) hud.toast(`${bot.name} 被击毙！`);
     spawnImpact(_hitPoint, false);
     audio.thud();
     return;
@@ -636,6 +927,75 @@ function deflectTracer(point, normal) {
   spawnImpact(point, true);
 }
 
+// ---------- 战术刀 ----------
+// 挥刀：0.3s 挥砍动画 + 前方 1.5m 射线命中（机器人/假人/纸靶/钢板都能砍，
+// 毁伤按重型部位打击算）。挥刀中再次扣动无效，挥完 0.05s 后可再挥。
+const _meleeRay = new THREE.Raycaster();
+_meleeRay.far = 1.6;
+function meleeAttack(now) {
+  if (now < meleeReadyAt) return;
+  if (!gun.swing()) return; // 正在挥砍中
+  meleeReadyAt = now + WEAPON_STATS.knife.swingTime + 0.05;
+  audio.swing();
+  camera.getWorldDirection(_dir);
+  _meleeRay.set(camera.getWorldPosition(new THREE.Vector3()), _dir);
+  const hits = _meleeRay.intersectObjects(allHitMeshes, false);
+  if (hits.length === 0) return;
+  const hit = hits[0];
+  const obj = hit.object;
+  const surface = obj.userData.surface || { kind: 'wall', hardness: 0.9 };
+  const rangeM = hit.distance;
+  const energy = 1; // 贴身挥砍不衰减
+  if (surface.kind === 'bot' && botManager) {
+    const bot = obj.userData.bot;
+    const zone = botManager.zoneAtPoint(bot, hit.point) || obj.userData.zone || 'chest';
+    const evalResult = evaluateHit({ zone, incidenceDeg: 0, rangeM, energy, roll: Math.random() });
+    const res = botManager.applyPlayerHit(bot, evalResult, KNIFE_DAMAGE_SCALE, player.pos);
+    score.hits += 1;
+    score.zoneCounts[evalResult.zone] += 1;
+    hud.showHitmarker(evalResult.zoneLabel);
+    hud.addLog(res.log, evalResult.zone === 'head' ? 'crit' : '');
+    if (res.killed) hud.toast(`${bot.name} 被击毙！`);
+    spawnImpact(hit.point, false);
+    audio.thud();
+    return;
+  }
+  if (surface.kind === 'dummy') {
+    const zone = activeMap.targets.zoneAtPoint(obj.userData.dummy, hit.point) || obj.userData.zone;
+    const evalResult = evaluateHit({ zone, incidenceDeg: 0, rangeM, energy, roll: Math.random() });
+    evalResult.severity *= KNIFE_DAMAGE_SCALE;
+    const res = activeMap.targets.applyDummyHit(obj, evalResult);
+    score.hits += 1;
+    score.zoneCounts[evalResult.zone] += 1;
+    hud.showHitmarker(evalResult.zoneLabel);
+    hud.addLog(res.log, evalResult.zone === 'head' ? 'crit' : '');
+    if (res.incapacitated) hud.toast('目标失能！');
+    spawnImpact(hit.point, false);
+    audio.thud();
+    return;
+  }
+  if (surface.kind === 'paper') {
+    const res = activeMap.targets.applyPaperHit(obj, hit.point);
+    score.hits += 1;
+    hud.showHitmarker('纸靶');
+    hud.addLog(res.log);
+    spawnImpact(hit.point, false);
+    audio.thud();
+    return;
+  }
+  if (surface.kind === 'steel') {
+    const res = activeMap.targets.applySteelHit(obj, energy);
+    score.hits += 1;
+    hud.showHitmarker('钢板');
+    hud.addLog(res.log);
+    spawnImpact(hit.point, true);
+    audio.tink();
+    return;
+  }
+  spawnImpact(hit.point, true);
+  audio.thud();
+}
+
 // ---------- 换弹 / 模式 / 重置 ----------
 // 换弹分段咔哒声时机（与 gun.js 的弹匣/拉机柄动画对齐）
 const RELOAD_CLICK_STAGES = [
@@ -646,16 +1006,28 @@ const RELOAD_CLICK_STAGES = [
 let reloadStage = 0;
 
 function startReload() {
-  if (reloading || ammo === MAG_SIZE) return;
+  if (currentWeapon === 'knife') return; // 战术刀没有弹药
+  const stats = WEAPON_STATS[currentWeapon];
+  if (reloading || ammoByWeapon[currentWeapon] === stats.magSize) return;
   cancelBandage(); // 开始换弹取消包扎（两者互斥，姿态不打架）
   reloading = true;
   reloadStage = 0;
-  reloadEnd = performance.now() / 1000 + RELOAD_TIME;
+  reloadDuration = stats.reloadTime; // 手枪换弹比步枪快
+  reloadEnd = performance.now() / 1000 + reloadDuration;
   gun.setReloading(true);
   hud.addLog('换弹中…');
 }
 
 function toggleMode() {
+  // 射击模式只对步枪有效：手枪恒单发，战术刀没有射击模式。
+  if (currentWeapon === 'pistol') {
+    hud.toast('手枪仅单发');
+    return;
+  }
+  if (currentWeapon === 'knife') {
+    hud.toast('战术刀没有射击模式');
+    return;
+  }
   fireMode = fireMode === 'auto' ? 'semi' : 'auto';
   hud.setFireMode(fireMode);
   audio.modeSwitch();
@@ -669,10 +1041,12 @@ function resetTargets() {
   hud.toast('靶子已重置');
 }
 
-controls.on('reload', () => { if (playing) startReload(); });
-controls.on('toggleMode', () => { if (playing) toggleMode(); });
-controls.on('reset', () => { if (playing) resetTargets(); });
-controls.on('jump', () => { if (playing) player.jumpBuffer = JUMP_BUFFER; });
+controls.on('reload', () => { if (playing && !paused) startReload(); });
+controls.on('toggleMode', () => { if (playing && !paused) toggleMode(); });
+controls.on('reset', () => { if (playing && !paused) resetTargets(); });
+controls.on('jump', () => { if (playing && !paused) player.jumpBuffer = JUMP_BUFFER; });
+controls.on('weaponCycle', () => { if (playing && !paused) cycleWeapon(); });
+controls.on('weaponSelect', (index) => { if (playing && !paused) switchWeapon(WEAPON_ORDER[index]); });
 controls.on('bandageToggle', (on) => {
   // 空按反馈：没失血时点开包扎开关，给一次提示——按钮不能悄悄没反应。
   // 事件只在点按瞬间发一次，不会每帧重复。
@@ -681,6 +1055,7 @@ controls.on('bandageToggle', (on) => {
 const pauseSub = document.getElementById('pause-sub');
 controls.on('lockLost', () => {
   if (playing && !controls.isTouch) {
+    paused = true; // 暂停即冻结：机器人与靶子不再推进
     if (pauseSub) pauseSub.textContent = '指针锁定已解除';
     hud.showPause();
   }
@@ -698,7 +1073,8 @@ function renderRecords() {
   const body = document.getElementById('records-body');
   if (!body) return;
   const r = recordsStore.get();
-  if (r.totalSessions === 0) {
+  const tdmTotal = (r.tdmWins || 0) + (r.tdmLosses || 0);
+  if (r.totalSessions === 0 && tdmTotal === 0) {
     body.innerHTML = '<p class="records-empty">暂无记录，去打一局</p>';
     return;
   }
@@ -710,6 +1086,9 @@ function renderRecords() {
     ['最快全清', r.fastestClear === null ? '—' : formatElapsed(r.fastestClear), true],
     ['总场次', `${r.totalSessions} 场`, false],
   ];
+  if (tdmTotal > 0) {
+    rows.push(['团队死斗', `${r.tdmWins || 0} 胜 / ${r.tdmLosses || 0} 负`, false]);
+  }
   if (r.lastSession) {
     const ls = r.lastSession;
     rows.push(['上次成绩',
@@ -728,7 +1107,9 @@ function resetSession() {
   score.shots = 0;
   score.hits = 0;
   score.zoneCounts = { head: 0, chest: 0, abdomen: 0, arm: 0, leg: 0 };
-  ammo = MAG_SIZE;
+  ammoByWeapon = { rifle: WEAPON_STATS.rifle.magSize, pistol: WEAPON_STATS.pistol.magSize };
+  currentWeapon = 'rifle';
+  gun.setWeapon('rifle');
   reloading = false;
   reloadStage = 0;
   gun.setReloading(false);
@@ -745,14 +1126,17 @@ function resetSession() {
   clearAnnounced = false;
   nextShotAt = 0;
   prevFiring = false;
+  meleeReadyAt = 0;
   hudTimer = 0;
-  hud.setAmmo(MAG_SIZE, '∞');
+  updateWeaponHud();
   hud.setScore({ shots: 0, hits: 0, zoneCounts: score.zoneCounts, elapsedSec: 0 });
   hud.clearLog();
 }
 
 // 结算一场：只有开过火的场次才计入记录，0 发的空场次不污染总场次与上次成绩。
+// 团队死斗不走这条：胜负只在比赛打完时记（endMatch），中途退出不记。
 function endSession() {
+  if (activeMap.isTdm) return;
   if (score.shots <= 0) return;
   const elapsed = playing ? performance.now() / 1000 - startedAt : 0;
   recordsStore.recordSession({
@@ -766,10 +1150,25 @@ function endSession() {
 function goHome() {
   endSession();
   playing = false; // 先停局内逻辑：随后解除指针锁定触发的 lockLost 不会再弹出暂停
+  paused = false;
   if (document.exitPointerLock) document.exitPointerLock();
   controls.setAimActive(false);
   controls.clearBandageLatch();
+  // 死斗收尾：机器人撤场、比赛状态丢弃、死斗浮层全部收起（中途退出不记胜负）。
+  if (botManager) {
+    botManager.setCombatEnabled(false);
+    botManager.dispose();
+    botManager = null;
+  }
+  tdm = null;
+  hud.hideMatchOverlay();
+  hud.hideRespawn();
+  hud.setBuffIndicator(false, null);
+  hud.clearKillFeed();
   resetSession();
+  // 靶子恢复显示（死斗时隐藏）：下一局若是街区，靶子都在。
+  streetTargets.setVisible(true);
+  refreshHitSets();
   renderRecords();
   hud.hidePause();
   hud.showStart();
@@ -783,17 +1182,22 @@ function startGame() {
   resetSession();
   document.body.classList.remove('home'); // 进地图：显示局内 HUD
   playing = true;
+  paused = false;
   startedAt = performance.now() / 1000;
   audio.unlock(); // 用户手势中创建/恢复 AudioContext
   hud.hideStart();
   hud.hidePause();
   controls.requestPointerLock();
-  hud.addLog(`${activeMap.label}已就绪，开始射击`);
+  if (activeMap.isTdm) {
+    startMatch();
+  } else {
+    hud.addLog(`${activeMap.label}已就绪，开始射击`);
+  }
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 }
 
 // 主页模式选择：点卡片切换地图（金色高亮移动），进入按钮文案跟随，
-// 背景 3D 场景即时切换。记录两张图共用，v0.9 不分地图统计。
+// 背景 3D 场景即时切换。记录两张图共用，死斗胜负单独记。
 function selectMap(id) {
   if (!initialized || !MAPS[id] || id === activeMapId) return;
   document.querySelectorAll('.mode-card[data-map]').forEach((c) => {
@@ -811,6 +1215,7 @@ document.querySelectorAll('.mode-card[data-map]').forEach((card) => {
 document.getElementById('btn-start').addEventListener('click', startGame);
 document.getElementById('btn-resume').addEventListener('click', () => {
   audio.unlock();
+  paused = false;
   hud.hidePause();
   controls.requestPointerLock();
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
@@ -818,15 +1223,33 @@ document.getElementById('btn-resume').addEventListener('click', () => {
 document.getElementById('btn-home').addEventListener('click', goHome);
 document.getElementById('btn-pause').addEventListener('click', () => {
   if (!playing) return;
+  paused = true;
   if (pauseSub) pauseSub.textContent = `点继续回到${activeMap.label}`;
   hud.showPause();
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 });
 canvas.addEventListener('click', () => {
   if (playing && !controls.isTouch && !controls.state.pointerLocked) {
+    paused = false;
     controls.requestPointerLock();
     hud.hidePause();
   }
+});
+// 结算浮层：再来一局（全新一场比赛）与返回主页。
+document.getElementById('btn-rematch').addEventListener('click', () => {
+  if (!isTdmActive()) return;
+  audio.uiClick();
+  resetSession();
+  startMatch();
+  paused = false;
+  startedAt = performance.now() / 1000;
+  hud.hideMatchOverlay();
+  controls.requestPointerLock();
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+});
+document.getElementById('btn-match-home').addEventListener('click', () => {
+  audio.uiClick();
+  goHome();
 });
 
 // ---------- 操作说明 ----------
@@ -841,6 +1264,7 @@ function openHelp() {
       <div class="help-row"><span>瞄准</span><span class="help-key">鼠标</span></div>
       <div class="help-row"><span>射击</span><span class="help-key">左键</span></div>
       <div class="help-row"><span>机瞄</span><span class="help-key">右键（按住）</span></div>
+      <div class="help-row"><span>直选武器（步枪 / 手枪 / 战术刀）</span><span class="help-key">1 / 2 / 3</span></div>
       ${keyRows}
     </div>
     <div class="help-section"><h3>触屏（iPad）</h3>
@@ -848,11 +1272,14 @@ function openHelp() {
       <div class="help-row"><span>转动视角</span><span class="help-key">右半屏滑动</span></div>
       <div class="help-row"><span>射击 / 机瞄 / 换弹 / 切换模式</span><span class="help-key">右侧圆形按键</span></div>
       <div class="help-row"><span>射击（备用键）</span><span class="help-key">左上角圆形按键</span></div>
-      <div class="help-row"><span>跳跃 / 包扎</span><span class="help-key">右侧圆形按键</span></div>
+      <div class="help-row"><span>跳跃 / 包扎 / 切换武器</span><span class="help-key">右侧圆形按键</span></div>
       <div class="help-row"><span>按钮位置与大小</span><span class="help-key">设置里拖拽编辑</span></div>
     </div>
     <div class="help-section"><h3>毁伤与失血</h3>
       <p class="help-note">假人分头 / 胸 / 腹 / 手臂 / 腿部五个模块，命中按部位与入射角判定贯穿、擦伤或骨骼偏转；跳弹只发生在钢板、墙体等硬表面。命中可能触发失血，持续加重模块毁伤；玩家受伤后也会失血（红屏、晃动、减速随失血量渐变加重），用包扎键止血，失血过多会倒地重生。</p>
+    </div>
+    <div class="help-section"><h3>团队死斗 5v5</h3>
+      <p class="help-note">你 + 4 名蓝队 AI 队友，对抗 5 名红队 AI 敌人，先到 30 分的队伍获胜。所有人配备步枪、手枪、战术刀、防弹衣与头盔：防弹衣护住胸腹、头盔护住头部，命中先打防具（吸收 70% 伤害），20% 概率击穿造成全额伤害，耐久耗尽即摧毁；阵亡 3 秒后重生，防具与状态全部重置。一方率先达到 20 分时，落后一方触发背水一战：失血效果 -5%、速度 +5%，直到该队再拿 5 个人头。</p>
     </div>`;
   helpOverlay.classList.add('show');
   document.body.classList.add('help-open'); // 放开触屏滚动，面板才能滑动
@@ -896,7 +1323,16 @@ function animate() {
   controls.update();
   const look = controls.consumeLook();
 
-  if (playing) {
+  // 暂停时冻结局内逻辑（镜头/枪/机器人/靶子都不推进），只渲染当前画面；
+  // 菜单状态走 else if 分支，暂停不走菜单镜头。
+  if (playing && !paused) {
+    // 死斗阵亡/比赛结束时的输入门：阵亡时不能移动与射击，结算后不能射击。
+    const dead = isTdmActive() && !tdm.playerAlive;
+    const matchOver = isTdmActive() && tdm.matchOver;
+    // 背水一战增益（只影响玩家所在蓝队；机器人拿各自队伍的增益）。
+    const tdmMods = isTdmActive()
+      ? buffModifiers(tdm.match, 'blue')
+      : { bleedFactor: 1, speedFactor: 1 };
     // 视角
     const SENS = 0.0023;
     player.yaw -= look.dx * SENS;
@@ -919,14 +1355,14 @@ function animate() {
     // 失血减速随总失血量渐变（刚中弹几乎不减，接近倒地时满额 -15%）；
     // 倒地黑场中忽略移动输入。包扎时不机瞄（枪身去做包扎姿态）。
     // bandaging 取上一帧的值，1 帧滞后不可见。
-    const aiming = controls.state.aiming && !reloading && !bandaging;
+    const aiming = controls.state.aiming && !reloading && !bandaging && currentWeapon !== 'knife';
     const bleedFrac = bleedFraction(bloodLoss);
     const baseSpeed = aiming ? 1.9 : controls.state.sprint ? 5.2 : 3.4;
-    const speed = baseSpeed * bleedSpeedFactor(bleedFrac);
+    const speed = baseSpeed * bleedSpeedFactor(bleedFrac) * tdmMods.speedFactor;
     const sin = Math.sin(player.yaw);
     const cos = Math.cos(player.yaw);
-    const mx = collapsing ? 0 : controls.state.moveX;
-    const my = collapsing ? 0 : controls.state.moveY;
+    const mx = (collapsing || dead) ? 0 : controls.state.moveX;
+    const my = (collapsing || dead) ? 0 : controls.state.moveY;
     // 前进方向为 -Z 旋转 yaw
     const vx = mx * cos - my * sin;
     const vz = -my * cos - mx * sin;
@@ -988,16 +1424,29 @@ function animate() {
     player.pos.z = THREE.MathUtils.clamp(player.pos.z, bounds.zMin, bounds.zMax);
     if (player.landDip > 0) player.landDip = Math.max(0, player.landDip - dt * 0.2); // 约 0.25s 回弹
 
-    // 失血滴答 + 倒地判定（黑场中不推进）。玩家滴答用 0.05/s（假人 0.1/s 不动）。
-    if (!collapsing) {
-      if (isBleeding(playerBleed)) bloodLoss += tickBleed(playerBleed, dt, PLAYER_BLEED_TICK_RATE).total;
+    // 失血滴答 + 倒地判定（黑场/阵亡中不推进）。玩家滴答用 0.05/s（假人 0.1/s
+    // 不动）；背水一战时失血速率 ×0.95。死斗里失血倒地走阵亡流程（记功 +
+    // 重生倒计时），不走靶场/街区的黑场重生。
+    if (!collapsing && !dead) {
+      if (isBleeding(playerBleed)) bloodLoss += tickBleed(playerBleed, dt, PLAYER_BLEED_TICK_RATE * tdmMods.bleedFactor).total;
       if (bloodLoss >= COLLAPSE_THRESHOLD) {
-        collapsing = true;
-        collapseT = 0;
-        collapseRespawned = false;
-        cancelBandage();
-        hud.setCollapseFade(1);
+        if (isTdmActive()) {
+          tdmDie(null);
+        } else {
+          collapsing = true;
+          collapseT = 0;
+          collapseRespawned = false;
+          cancelBandage();
+          hud.setCollapseFade(1);
+        }
       }
+    }
+
+    // 死斗重生倒计时：3 秒后满状态重生（防具/模块/失血/弹药全部重置）。
+    if (isTdmActive() && !tdm.playerAlive && !tdm.matchOver) {
+      tdm.respawnT -= dt;
+      hud.setRespawnTimer(tdm.respawnT);
+      if (tdm.respawnT <= 0) respawnTdmPlayer();
     }
 
     // 失血红屏：随总失血量渐变加深 + 缓慢脉冲（刚中弹只有淡淡一层）。
@@ -1070,9 +1519,9 @@ function animate() {
     const leanTarget = -mx * 0.012 * speedNorm;
     player.lean += (leanTarget - player.lean) * Math.min(1, 8 * dt);
 
-    // 换弹：进度驱动枪身分段动画 + 分段咔哒声
+    // 换弹：进度驱动枪身分段动画 + 分段咔哒声（时长按当前武器：手枪更快）
     if (reloading) {
-      const progress = 1 - (reloadEnd - now) / RELOAD_TIME;
+      const progress = 1 - (reloadEnd - now) / reloadDuration;
       const p = Math.min(1, Math.max(0, progress));
       hud.setReloading(true, p);
       gun.setReloadProgress(p);
@@ -1084,22 +1533,26 @@ function animate() {
       }
       if (now >= reloadEnd) {
         reloading = false;
-        ammo = MAG_SIZE;
+        ammoByWeapon[currentWeapon] = WEAPON_STATS[currentWeapon].magSize;
         gun.setReloading(false);
         hud.setReloading(false);
         hud.addLog('换弹完成');
       }
     }
 
-    // 射击：连发按住连续，单发每次扣动一下；倒地黑场中不能射击
-    const firing = controls.state.firing && !collapsing;
+    // 射击：连发按住连续，单发每次扣动一下；倒地黑场/阵亡/比赛结束时不能射击；
+    // 战术刀每次扣动挥砍一次（挥刀间隔由 meleeAttack 内部控制）。
+    const firing = controls.state.firing && !collapsing && !dead && !matchOver;
     const triggerEdge = firing && !prevFiring;
-    const interval = fireMode === 'auto' ? AUTO_INTERVAL : SEMI_INTERVAL;
-    if (!reloading && now >= nextShotAt) {
-      if (fireMode === 'auto' && firing) {
-        shoot(now);
-        nextShotAt = now + interval;
-      } else if (fireMode === 'semi' && triggerEdge) {
+    if (currentWeapon === 'knife') {
+      if (triggerEdge) meleeAttack(now);
+    } else if (!reloading && now >= nextShotAt) {
+      const stats = WEAPON_STATS[currentWeapon];
+      const canAuto = currentWeapon === 'rifle' && fireMode === 'auto';
+      const interval = currentWeapon === 'rifle'
+        ? (fireMode === 'auto' ? AUTO_INTERVAL : SEMI_INTERVAL)
+        : stats.semiInterval;
+      if ((canAuto && firing) || (!canAuto && triggerEdge)) {
         shoot(now);
         nextShotAt = now + interval;
       }
@@ -1128,22 +1581,23 @@ function animate() {
     gun.update(dt, aiming);
     hud.setCrosshair(gun.getBloom() * 900, true);
     hud.setAds(aiming);
-    hud.setAmmo(ammo, '∞');
+    if (currentWeapon === 'knife') hud.setAmmo('—', '');
+    else hud.setAmmo(ammoByWeapon[currentWeapon], '∞');
 
     hudTimer += dt;
     if (hudTimer > 0.25) {
       hudTimer = 0;
       hud.setScore({ shots: score.shots, hits: score.hits, zoneCounts: score.zoneCounts, elapsedSec: elapsed });
       // 全清判定：纸靶（含移动靶）全倒 + 钢板全倒 + 假人失能。达成即时保存
-      // 最快全清（不等回主页结算），每局只播报一次。
-      if (!clearAnnounced && activeMap.targets.getClearState().cleared) {
+      // 最快全清（不等回主页结算），每局只播报一次。死斗没有靶子，不判定。
+      if (!activeMap.isTdm && !clearAnnounced && activeMap.targets.getClearState().cleared) {
         clearAnnounced = true;
         recordsStore.recordClear(Math.max(0, Math.round(elapsed)));
         hud.addLog(`全部清除！用时 ${formatElapsed(elapsed)}`, 'ricochet');
         hud.toast('全部清除！');
       }
     }
-  } else {
+  } else if (!playing) {
     // 菜单状态：镜头在当前地图的出生点缓缓扫视（主页背景随选中的地图切换）
     const mc = activeMap.env.menuCam;
     camera.position.set(mc.x, EYE_HEIGHT, mc.z);
@@ -1153,8 +1607,21 @@ function animate() {
     gun.update(dt, false);
   }
 
-  activeMap.targets.update(dt, now);
-  updateEffects(dt);
+  // 靶子/特效/机器人：暂停时全部冻结；菜单时靶子继续动（主页背景动画）。
+  if (!paused) {
+    activeMap.targets.update(dt, now);
+    updateEffects(dt);
+    if (playing && isTdmActive() && botManager && !tdm.matchOver) {
+      botManager.update(dt, now, {
+        pos: player.pos,
+        alive: tdm.playerAlive,
+        speed: Math.hypot(player.vel.x, player.vel.z),
+      }, {
+        blue: buffModifiers(tdm.match, 'blue'),
+        red: buffModifiers(tdm.match, 'red'),
+      });
+    }
+  }
   // 视图模型相机与主镜头逐帧同步（位置/朝向/FOV/宽高比），再分两次渲染：
   // 主场景先画（背景色自带强制清空），清空深度后画枪——枪永远在世界前面，
   // 不会被近处墙体裁掉，也不吃世界灯光。
@@ -1267,10 +1734,51 @@ window.__impasseDebug = {
   simulateHit(zone, severity) { playerTakeHit(zone, severity); },
   get lastShot() { return lastShot; },
   getDummies() { return activeMap.targets.getDummies(); },
+  // 武器与防具状态（调试用）。
+  get weapon() { return currentWeapon; },
+  switchWeapon(name) { switchWeapon(name); },
+  get gear() { return isTdmActive() ? gearStatus(tdm.playerGear) : null; },
+  get integrity() { return isTdmActive() ? { ...tdm.playerIntegrity } : null; },
+  // 团队死斗调试：比分/增益/机器人状态、强制比分（测背水一战）、强制击杀。
+  tdm: {
+    get active() { return isTdmActive(); },
+    get scores() { return isTdmActive() ? { ...tdm.match.scores } : null; },
+    get buff() {
+      return isTdmActive()
+        ? { active: tdm.match.buff, used: tdm.match.buffUsed }
+        : null;
+    },
+    get matchOver() { return isTdmActive() ? tdm.matchOver : null; },
+    get playerAlive() { return isTdmActive() ? tdm.playerAlive : null; },
+    setScore(blue, red) {
+      if (!isTdmActive()) return;
+      tdm.match.scores.blue = blue;
+      tdm.match.scores.red = red;
+      hud.setTdmScore(blue, red);
+    },
+    get bots() { return botManager ? botManager.getBots() : []; },
+    checkWaypoints() { return botManager ? botManager.checkWaypoints() : null; },
+    killBot(i) {
+      if (!botManager) return;
+      const b = botManager.bots[i];
+      if (b) {
+        botManager.applyPlayerHit(b, {
+          zone: 'head', zoneLabel: '头部', severity: 5,
+          outcomeLabel: '贯穿', incapacitated: true,
+        }, 1, player.pos);
+      }
+    },
+    damagePlayer(zone, severity) { playerTakeHit(zone, severity); },
+    scoreKill(team) {
+      if (!isTdmActive()) return;
+      recordTdmKill(team,
+        { name: '测试员', team, isPlayer: false },
+        { name: '靶子', team: team === 'blue' ? 'red' : 'blue', isPlayer: false });
+    },
+  },
 };
 
-hud.setAmmo(MAG_SIZE, '∞');
-hud.setFireMode(fireMode);
+updateWeaponHud();
 hud.setCrosshair(0, true);
 renderRecords();
 hud.showStart();
@@ -1312,6 +1820,13 @@ async function init() {
   // 假人士兵：靶场用绿色版、街区用蓝色版，任一失败时互相顶替，都失败则程序化。
   const rangeSoldier = assetSet.models.get('soldier') || assetSet.models.get('soldier-blue') || null;
   const streetSoldier = assetSet.models.get('soldier-blue') || assetSet.models.get('soldier') || null;
+  // 机器人队伍模型：蓝队用蓝色版、红队用绿色版（bots.js 内染红），任一失败
+  // 时互相顶替；两个都失败则死斗卡片不可选（机器人没有身体可打）。
+  soldierModels = {
+    blue: assetSet.models.get('soldier-blue') || assetSet.models.get('soldier') || null,
+    red: assetSet.models.get('soldier') || assetSet.models.get('soldier-blue') || null,
+  };
+  soldierAnimations = assetSet.animations || null;
   rangeEnv = createRange({ scene });
   streetEnv = createStreet({ scene, assets: assetSet });
   if (envTexture) {
@@ -1323,9 +1838,26 @@ async function init() {
   MAPS = {
     range: { id: 'range', label: '靶场', env: rangeEnv, targets: rangeTargets },
     street: { id: 'street', label: '街区', env: streetEnv, targets: streetTargets },
+    tdm: { id: 'tdm', label: '团队死斗', env: streetEnv, targets: streetTargets, isTdm: true },
   };
+  if (!soldierModels.blue && !soldierModels.red) {
+    const card = document.querySelector('.mode-card[data-map="tdm"]');
+    if (card) {
+      card.classList.add('disabled');
+      card.setAttribute('aria-disabled', 'true');
+      card.removeAttribute('data-map');
+      const tag = document.createElement('span');
+      tag.className = 'mode-tag';
+      tag.textContent = '素材缺失';
+      card.appendChild(tag);
+    }
+  }
   setActiveMap('range');
-  gun = createGun({ camera: gunCamera, rifleModel: assetSet.models.get('rifle') || null });
+  gun = createGun({
+    camera: gunCamera,
+    rifleModel: assetSet.models.get('rifle') || null,
+    pistolModel: assetSet.models.get('pistol') || null,
+  });
   initialized = true;
   if (startBtn) {
     startBtn.disabled = false;

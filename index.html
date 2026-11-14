@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>IMPASSE v0.11</title>
-<link rel="stylesheet" href="css/style.css?v=0.11">
+<title>IMPASSE v0.12</title>
+<link rel="stylesheet" href="css/style.css?v=0.12">
 <script type="importmap">
 {
   "imports": {
@@ -45,6 +45,17 @@
 <div id="hud-bl">
   <div id="ammo"><span id="ammo-mag">30</span><span id="ammo-res">/ ∞</span></div>
   <div id="gun-state"><span id="fire-mode">连发</span><span id="ads-state">腰射</span></div>
+  <!-- 武器槽：步枪 / 手枪 / 战术刀（1/2/3 或 Q / 触屏切换键） -->
+  <div id="weapon-slots">
+    <span class="weapon-slot current" data-weapon="rifle" title="突击步枪"><svg viewBox="0 0 32 20" fill="currentColor" aria-hidden="true"><path d="M1 8h17l4-3h7v3h3v3h-8l-2 5h-5l1-5H9l-2 6H3l1-6H1z"/></svg><em>1</em></span>
+    <span class="weapon-slot" data-weapon="pistol" title="手枪"><svg viewBox="0 0 24 20" fill="currentColor" aria-hidden="true"><path d="M2 3h17v5h-7l-2 9H5l1.5-9H2z"/></svg><em>2</em></span>
+    <span class="weapon-slot" data-weapon="knife" title="战术刀"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 19L18 4l3 1.5L8 20l-3 1.5z"/><path d="M7 21l-4.5 1L4 17.5z"/></svg><em>3</em></span>
+  </div>
+  <!-- 防具耐久（仅团队死斗显示）：防弹衣 / 头盔各 5 格 -->
+  <div id="gear-pips">
+    <div class="gear-row" id="gear-armor"><span class="gear-label">防弹衣</span><span class="gear-seg on"></span><span class="gear-seg on"></span><span class="gear-seg on"></span><span class="gear-seg on"></span><span class="gear-seg on"></span></div>
+    <div class="gear-row" id="gear-helmet"><span class="gear-label">头盔</span><span class="gear-seg on"></span><span class="gear-seg on"></span><span class="gear-seg on"></span><span class="gear-seg on"></span><span class="gear-seg on"></span></div>
+  </div>
   <div id="bleed-indicator"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C12 2 5 10.2 5 15a7 7 0 0 0 14 0C19 10.2 12 2 12 2z"/></svg><span id="bleed-zones"></span></div>
   <div id="reload-wrap"><div id="reload-bar"></div><span>换弹中…</span></div>
   <div id="bandage-wrap"><div id="bandage-bar"></div><span>包扎中…</span></div>
@@ -61,6 +72,28 @@
 <!-- 右侧：毁伤日志 -->
 <div id="damage-log"></div>
 
+<!-- 团队死斗 HUD：比分 / 击杀播报 / 背水一战 -->
+<div id="tdm-score"><span id="tdm-blue">0</span><span class="tdm-sep">:</span><span id="tdm-red">0</span><span class="tdm-target">/ 30</span></div>
+<div id="buff-indicator"></div>
+<div id="kill-feed"></div>
+<div id="buff-banner"></div>
+
+<!-- 重生倒计时（团队死斗阵亡时） -->
+<div id="respawn-overlay">
+  <div id="respawn-text"></div>
+  <div id="respawn-timer"></div>
+</div>
+
+<!-- 比赛结算（团队死斗） -->
+<div id="match-overlay" class="overlay">
+  <div class="panel">
+    <h1 id="match-title"></h1>
+    <p class="sub" id="match-score"></p>
+    <button id="btn-rematch" type="button">再来一局</button>
+    <button id="btn-match-home" type="button" class="btn-ghost">返回主页</button>
+  </div>
+</div>
+
 <!-- 中央提示 -->
 <div id="toast"></div>
 
@@ -76,6 +109,7 @@
   <button id="btn-mode" type="button" aria-label="射击模式" class="auto"><svg class="icon-auto" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><g transform="translate(-7.2,3) scale(0.7)"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></g><g transform="translate(0,3) scale(0.7)"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></g><g transform="translate(7.2,3) scale(0.7)"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></g></svg><svg class="icon-semi" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.5c2.4 3 3.4 6 3.4 9.2V19a1.6 1.6 0 0 1-1.6 1.6H10.2A1.6 1.6 0 0 1 8.6 19v-8.3c0-3.2 1-6.2 3.4-9.2z"/></svg></button>
   <button id="btn-jump" type="button" aria-label="跳跃"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="20" x2="12" y2="5"/><polyline points="5 11 12 4 19 11"/></svg></button>
   <button id="btn-bandage" type="button" aria-label="包扎"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10 3h4v7h7v4h-7v7h-4v-7H3v-4h7z"/></svg></button>
+  <button id="btn-weapon" type="button" aria-label="切换武器"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>
 </div>
 
 <!-- 布局编辑条（仅编辑布局时显示） -->
@@ -90,8 +124,8 @@
 <div id="start-overlay" class="overlay show">
   <div class="home">
     <div class="home-main">
-      <h1 class="home-title">IMPASSE <span class="ver">v0.11</span></h1>
-      <p class="home-sub">单人射击 · 无血条 · 模块化毁伤判定</p>
+      <h1 class="home-title">IMPASSE <span class="ver">v0.12</span></h1>
+      <p class="home-sub">射击 · 无血条 · 模块化毁伤判定</p>
       <div class="mode-list">
         <div class="mode-card selected" data-map="range">
           <div class="mode-info">
@@ -105,12 +139,11 @@
             <span class="mode-desc">90×90m 室外街区 · 双广场 / 工业角 / 5 间可进房间 · 边走边打</span>
           </div>
         </div>
-        <div class="mode-card disabled" aria-disabled="true">
+        <div class="mode-card" data-map="tdm">
           <div class="mode-info">
             <span class="mode-name">团队死斗 5v5</span>
-            <span class="mode-desc">重生制团队对抗 · 敌人 AI · 完整地图</span>
+            <span class="mode-desc">重生制团队对抗 · 4 名 AI 队友 vs 5 名 AI 敌人 · 30 分胜 · 防弹衣 / 头盔可摧毁</span>
           </div>
-          <span class="mode-tag">开发中</span>
         </div>
       </div>
       <div class="home-actions">
@@ -121,7 +154,7 @@
           <button id="btn-help" type="button" class="home-btn-ghost">操作说明</button>
         </div>
       </div>
-      <p class="home-foot"><span class="ver">v0.11</span> · Three.js · 纯静态页面</p>
+      <p class="home-foot"><span class="ver">v0.12</span> · Three.js · 纯静态页面</p>
       <p class="home-credits">素材：Kenney · Quaternius · Poly Haven（CC0）· 字体 Rajdhani（OFL）</p>
     </div>
     <div class="home-records">
@@ -158,6 +191,6 @@
   <div class="panel settings-panel" id="settings-panel"></div>
 </div>
 
-<script type="module" src="js/main.js?v=0.11"></script>
+<script type="module" src="js/main.js?v=0.12"></script>
 </body>
 </html>

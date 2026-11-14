@@ -10,7 +10,7 @@
 // 传输格式：采样以 base64 文本（.b64）存在仓库里（推送工具拒二进制），
 // 这里复用 assets.js 的 fetchAssetBytes() 取回原始字节再解码。
 
-import { fetchAssetBytes } from './assets.js?v=0.11';
+import { fetchAssetBytes } from './assets.js?v=0.12';
 
 const SAMPLE_FILES = {
   shotNear: 'shot-ar15-near.m4a',
@@ -94,12 +94,14 @@ export function createAudio() {
   }
 
   // 播放一个已解码的采样；没加载出来返回 false，调用方走合成回退。
-  function playSample(key, gain = 1) {
+  // rate: 播放速率（手枪用 1.3 倍速，听着更脆，与步枪区分开）。
+  function playSample(key, gain = 1, rate = 1) {
     const buf = samples[key];
     if (!ctx || !master || !buf) return false;
     try {
       const src = ctx.createBufferSource();
       src.buffer = buf;
+      src.playbackRate.value = rate;
       const g = ctx.createGain();
       g.gain.value = gain;
       src.connect(g);
@@ -236,6 +238,35 @@ export function createAudio() {
     noiseHit({ dur: 0.03, filterType: 'bandpass', freq: 1000, q: 2.5, gain: 0.5 });
   }
 
+  // 手枪射击：步枪采样 1.3 倍速 + 低增益，听着更脆更短。
+  function pistolShot() {
+    if (!ensure()) return;
+    if (playSample('shotNear', 0.85, 1.3)) return;
+    noiseHit({ dur: 0.09, filterType: 'lowpass', freq: 2000, gain: 0.9 });
+    tone({ freq: 90, freqEnd: 55, dur: 0.08, type: 'sine', gain: 0.5 });
+  }
+
+  // 机器人开火（远处枪声）：中距离采样，音量随距离衰减。
+  function distantShot(distanceM) {
+    if (!ensure()) return;
+    const gain = Math.min(0.9, Math.max(0.12, 1.1 - distanceM / 40));
+    if (playSample('shotMid', gain)) return;
+    noiseHit({ dur: 0.12, filterType: 'lowpass', freq: 900, gain: gain * 0.8 });
+  }
+
+  // 挥刀破空声：短促的带通噪声扫过。
+  function swing() {
+    if (!ensure()) return;
+    noiseHit({ dur: 0.12, filterType: 'bandpass', freq: 900, q: 1.2, gain: 0.5 });
+  }
+
+  // 武器切换：装备咔哒声。
+  function weaponSwitch() {
+    if (!ensure()) return;
+    if (playSample('dryClick', 0.9)) return;
+    noiseHit({ dur: 0.03, filterType: 'bandpass', freq: 1400, q: 2.5, gain: 0.6 });
+  }
+
   // 调试用：自动化验证读取采样加载状态，不影响游戏。
   function sampleStatus() {
     return {
@@ -245,5 +276,5 @@ export function createAudio() {
     };
   }
 
-  return { unlock, preloadSamples, shot, click, dryFire, tink, thud, land, heal, footstep, uiClick, modeSwitch, sampleStatus };
+  return { unlock, preloadSamples, shot, pistolShot, distantShot, swing, weaponSwitch, click, dryFire, tink, thud, land, heal, footstep, uiClick, modeSwitch, sampleStatus };
 }

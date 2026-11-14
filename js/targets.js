@@ -20,8 +20,8 @@ import {
   clearBleeds,
   bleedingZones,
   totalSeverity,
-} from './bleeding.js?v=0.11';
-import { ZONE_LABELS } from './damage.js?v=0.11';
+} from './bleeding.js?v=0.12';
+import { ZONE_LABELS } from './damage.js?v=0.12';
 
 const HOLE_GEO = new THREE.CircleGeometry(0.014, 10);
 const HOLE_MAT = new THREE.MeshBasicMaterial({ color: 0x111111 });
@@ -158,6 +158,11 @@ export function createTargets({ parent, onEvent, layout, soldierModel = null }) 
   const papers = [];
   const steels = [];
   const dummies = [];
+  // 靶子统一挂在内部根组下：团队死斗时整组隐藏（街区里不留纸靶/假人），
+  // 碰撞体与命中网格由主循环按模式取舍，这里只管可见性。
+  const root = new THREE.Group();
+  parent.add(root);
+  let targetsVisible = true;
 
   const paperTex = paperTexture();
   const standMat = new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.8, metalness: 0.3 });
@@ -199,7 +204,7 @@ export function createTargets({ parent, onEvent, layout, soldierModel = null }) 
     const g = new THREE.Group();
     g.position.set(p.x, 0, p.z);
     g.rotation.y = p.rotY || 0;
-    parent.add(g);
+    root.add(g);
     makePaper(g);
     makeStand(g);
     const c = Math.abs(Math.cos(p.rotY || 0));
@@ -221,19 +226,19 @@ export function createTargets({ parent, onEvent, layout, soldierModel = null }) 
       standMat
     );
     rail.position.set(m.x, 2.4, m.z);
-    parent.add(rail);
+    root.add(rail);
     if (m.posts) {
       const postGeo = new THREE.BoxGeometry(0.08, 2.4, 0.08);
       for (const end of [-m.railLength / 2, m.railLength / 2]) {
         const post = new THREE.Mesh(postGeo, standMat);
         post.position.set(alongX ? m.x + end : m.x, 1.2, alongX ? m.z : m.z + end);
-        parent.add(post);
+        root.add(post);
       }
     }
     const carrier = new THREE.Group();
     carrier.position.set(m.x, 0, m.z);
     carrier.rotation.y = m.rotY || 0;
-    parent.add(carrier);
+    root.add(carrier);
     const hanger = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.5, 0.06), standMat);
     hanger.position.set(0, 2.15, 0);
     carrier.add(hanger);
@@ -246,7 +251,7 @@ export function createTargets({ parent, onEvent, layout, soldierModel = null }) 
     const pivot = new THREE.Group();
     pivot.position.set(x, 1.6, z);
     pivot.rotation.y = rotY;
-    parent.add(pivot);
+    root.add(pivot);
     const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.6, 0.08), standMat);
     post.position.set(0, -0.8, 0.25);
     pivot.add(post);
@@ -277,7 +282,7 @@ export function createTargets({ parent, onEvent, layout, soldierModel = null }) 
     const group = new THREE.Group();
     group.position.set(x, 0, z);
     group.rotation.y = rotY;
-    parent.add(group);
+    root.add(group);
     const dummy = {
       group,
       integrity: { head: 1, chest: 1, abdomen: 1, arm: 1, leg: 1 },
@@ -522,6 +527,10 @@ export function createTargets({ parent, onEvent, layout, soldierModel = null }) 
 
   // ---------- 更新 ----------
   function update(dt, elapsed) {
+    if (!targetsVisible) {
+      updateDrips(dt); // 隐藏时只让残留血滴淡出，靶子动画全部冻结
+      return;
+    }
     if (moverState) {
       moverState.carrier.position[moverState.axis] =
         moverState.base + Math.sin(elapsed * moverState.speed) * moverState.amplitude;
@@ -654,11 +663,18 @@ export function createTargets({ parent, onEvent, layout, soldierModel = null }) 
     };
   }
 
+  // 团队死斗时隐藏整组靶子（主循环同时会排除靶子的碰撞体与命中网格）。
+  function setVisible(v) {
+    targetsVisible = v;
+    root.visible = v;
+  }
+
   return {
     hitMeshes,
     colliders,
     update,
     reset,
+    setVisible,
     applyPaperHit,
     applySteelHit,
     applyDummyHit,

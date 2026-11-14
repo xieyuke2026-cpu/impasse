@@ -2,7 +2,8 @@
 // 纯函数 + 可注入存储，存储不可用或数据损坏时回落空记录，游戏不受影响。
 // v0.9 起两张地图（靶场/街区）共用同一份记录，不分地图统计。
 // 记录内容：最高命中率（仅 ≥10 发的场次）、最多命中数、最快全清用时、
-// 总场次、上次成绩。主页的记录面板只显示这里存下的真实数据，永不造假。
+// 总场次、上次成绩；v0.12 起加团队死斗胜/负场（只计打完的比赛，中途
+// 退出不计）。主页的记录面板只显示这里存下的真实数据，永不造假。
 
 const STORAGE_KEY = 'impasse.records.v1';
 export const MIN_SHOTS_FOR_ACCURACY = 10;
@@ -14,6 +15,8 @@ export function emptyRecords() {
     mostHits: null, // number，单场最多命中数
     fastestClear: null, // number（秒），仅全清场次
     lastSession: null, // { shots, hits, accuracy, elapsedSec, cleared }
+    tdmWins: 0, // 团队死斗胜场（只计打完的比赛）
+    tdmLosses: 0, // 团队死斗负场（只计打完的比赛）
   };
 }
 
@@ -48,6 +51,8 @@ export function sanitizeRecords(raw) {
   if (Number.isInteger(raw.mostHits) && raw.mostHits >= 0) clean.mostHits = raw.mostHits;
   if (isNonNegNumber(raw.fastestClear) && raw.fastestClear > 0) clean.fastestClear = raw.fastestClear;
   clean.lastSession = sanitizeSession(raw.lastSession);
+  if (Number.isInteger(raw.tdmWins) && raw.tdmWins >= 0) clean.tdmWins = raw.tdmWins;
+  if (Number.isInteger(raw.tdmLosses) && raw.tdmLosses >= 0) clean.tdmLosses = raw.tdmLosses;
   return clean;
 }
 
@@ -92,6 +97,8 @@ export function applySession(records, session) {
     mostHits: records.mostHits,
     fastestClear: records.fastestClear,
     lastSession: { shots, hits, accuracy, elapsedSec, cleared },
+    tdmWins: records.tdmWins || 0,
+    tdmLosses: records.tdmLosses || 0,
   };
   if (shots >= MIN_SHOTS_FOR_ACCURACY) {
     if (!next.bestAccuracy || accuracy > next.bestAccuracy.accuracy) {
@@ -115,6 +122,15 @@ export function applyClear(records, elapsedSec) {
   return records;
 }
 
+// 团队死斗比赛结算：只计胜/负，不动射击记录。返回新记录（不改原对象）。
+export function applyTdmMatch(records, won) {
+  return {
+    ...records,
+    tdmWins: (records.tdmWins || 0) + (won ? 1 : 0),
+    tdmLosses: (records.tdmLosses || 0) + (won ? 0 : 1),
+  };
+}
+
 export function createRecordsStore(storage) {
   const store = storage === undefined ? defaultStorage() : storage;
   let current = loadRecords(store);
@@ -122,6 +138,11 @@ export function createRecordsStore(storage) {
     get() { return current; },
     recordSession(session) {
       current = applySession(current, session);
+      saveRecords(current, store);
+      return current;
+    },
+    recordTdmMatch(won) {
+      current = applyTdmMatch(current, won);
       saveRecords(current, store);
       return current;
     },
