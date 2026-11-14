@@ -332,6 +332,16 @@ body.touch #hud-bl { left: 20px; bottom: 170px; }
   font-size: 19px;
   border-color: rgba(255, 120, 90, 0.7);
 }
+/* 左上角备用开火键：与右下主开火键同一功能、同一图标；只在触屏显示（随 #touch-ui）， */
+/* 大小随 --btn-scale；摇杆换边时不镜像——左上角没有计分/日志/暂停键，两侧布局都不冲突。 */
+#btn-fire-alt {
+  left: calc(env(safe-area-inset-left, 0px) + 26px * var(--btn-scale, 1));
+  top: calc(env(safe-area-inset-top, 0px) + 26px * var(--btn-scale, 1));
+  width: calc(72px * var(--btn-scale, 1));
+  height: calc(72px * var(--btn-scale, 1));
+  border-color: rgba(255, 120, 90, 0.7);
+}
+#btn-fire-alt svg { width: calc(38px * var(--btn-scale, 1)); height: calc(38px * var(--btn-scale, 1)); }
 #btn-aim { right: calc(134px * var(--btn-scale, 1)); bottom: calc(52px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); }
 #btn-reload { right: calc(40px * var(--btn-scale, 1)); bottom: calc(146px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); }
 #btn-mode { right: calc(134px * var(--btn-scale, 1)); bottom: calc(140px * var(--btn-scale, 1)); width: calc(60px * var(--btn-scale, 1)); height: calc(60px * var(--btn-scale, 1)); }

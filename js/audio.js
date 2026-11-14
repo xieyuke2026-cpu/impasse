@@ -117,6 +117,19 @@ export function createAudio() {
     tone({ freq: 70, freqEnd: 45, dur: 0.09, type: 'sine', gain: 0.3 });
   }
 
+  // 脚步声：短促的低频闷响，左右脚音调略有不同（交替）。
+  // 占位合成音：等真实脚步素材落地后替换为采样播放。主循环在 bob 周期过谷底
+  // 时调用（一步一声），不要在别处按固定间隔调用，会与步伐脱节。
+  // 音量取 noiseHit 0.35（经 master 0.15 后约 0.05），脚步声不能盖过枪声。
+  let stepSide = 0;
+  function footstep() {
+    if (!ensure()) return;
+    stepSide = 1 - stepSide;
+    const freq = stepSide ? 190 : 160;
+    noiseHit({ dur: 0.07, filterType: 'lowpass', freq, gain: 0.35 });
+    tone({ freq: 60, freqEnd: 40, dur: 0.06, type: 'sine', gain: 0.12 });
+  }
+
   // 包扎完成：两声轻柔的上行音
   function heal() {
     if (!ensure()) return;
@@ -124,5 +137,5 @@ export function createAudio() {
     setTimeout(() => tone({ freq: 780, dur: 0.14, type: 'sine', gain: 0.3 }), 90);
   }
 
-  return { unlock, shot, click, dryFire, tink, thud, land, heal };
+  return { unlock, shot, click, dryFire, tink, thud, land, heal, footstep };
 }

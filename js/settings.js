@@ -41,6 +41,7 @@ const DEFAULTS = {
 // 可拖拽布局的触屏按钮（摇杆不参与拖拽，换边即可）
 const LAYOUT_BUTTONS = [
   { id: 'fire', el: 'btn-fire' },
+  { id: 'fireAlt', el: 'btn-fire-alt' },
   { id: 'aim', el: 'btn-aim' },
   { id: 'reload', el: 'btn-reload' },
   { id: 'mode', el: 'btn-mode' },

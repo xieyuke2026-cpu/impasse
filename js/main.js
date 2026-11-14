@@ -1,4 +1,4 @@
-// IMPASSE v0.8 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
+// IMPASSE v0.9 —— 主循环：场景、射击判定、曳光/命中特效、计分、游戏状态。
 // 渲染：Three.js（CDN）；输入：Pointer Lock + 触屏；毁伤：damage.js 纯函数；
 // 失血：bleeding.js 纯函数（假人 + 玩家）；记录：records.js 纯函数 + localStorage。
 // 两张地图（靶场 + 城市街区）同场建造、按组切换可见性；记录两张图共用。
@@ -32,8 +32,8 @@ import {
 } from './bleeding.js?v=0.8';
 
 // 唯一版本号：由脚本写进主页的版本标签，显示的版本即脚本版本，
-// 旧脚本缓存不会谎报新版本（HTML 里的 v0.8 只是加载前的占位文案）。
-const VERSION = '0.8';
+// 旧脚本缓存不会谎报新版本（HTML 里的 v0.9 只是加载前的占位文案）。
+const VERSION = '0.9';
 
 const MAG_SIZE = 30;
 const RELOAD_TIME = 1.8;
@@ -55,6 +55,11 @@ const BANDAGE_TIME = 2.5; // 包扎读条（秒）：键盘按住 B / 触屏点�
 const COLLAPSE_FADE_TIME = 0.9; // 倒地黑场时长（秒），黑满后重生
 const COYOTE_TIME = 0.08; // 土狼时间：离地后 0.08s 内仍可起跳
 const JUMP_BUFFER = 0.1; // 输入缓冲：落地前 0.1s 内的跳跃输入仍生效
+// 头部摆动幅度上限（Ryan 反馈“抖动太小”后加大）：垂直 0.045m（峰峰值 0.09m）、
+// 横向 0.02m、滚转 0.008rad；频率随移速走，幅度只到上限不再变大。
+const BOB_VERT_AMP = 0.045;
+const BOB_LAT_AMP = 0.02;
+const BOB_ROLL_AMP = 0.008;
 
 // ---------- 渲染器与场景 ----------
 const canvas = document.getElementById('game-canvas');
@@ -124,6 +129,7 @@ const controls = createControls({
     joystickKnob: document.getElementById('joystick-knob'),
     lookZone: document.getElementById('look-zone'),
     btnFire: document.getElementById('btn-fire'),
+    btnFireAlt: document.getElementById('btn-fire-alt'),
     btnAim: document.getElementById('btn-aim'),
     btnReload: document.getElementById('btn-reload'),
     btnMode: document.getElementById('btn-mode'),
@@ -750,7 +756,7 @@ function startGame() {
 }
 
 // 主页模式选择：点卡片切换地图（金色高亮移动），进入按钮文案跟随，
-// 背景 3D 场景即时切换。记录两张图共用，v0.8 不分地图统计。
+// 背景 3D 场景即时切换。记录两张图共用，v0.9 不分地图统计。
 function selectMap(id) {
   if (!MAPS[id] || id === activeMapId) return;
   document.querySelectorAll('.mode-card[data-map]').forEach((c) => {
@@ -803,6 +809,7 @@ function openHelp() {
       <div class="help-row"><span>移动</span><span class="help-key">左半屏虚拟摇杆</span></div>
       <div class="help-row"><span>转动视角</span><span class="help-key">右半屏滑动</span></div>
       <div class="help-row"><span>射击 / 机瞄 / 换弹 / 切换模式</span><span class="help-key">右侧圆形按键</span></div>
+      <div class="help-row"><span>射击（备用键）</span><span class="help-key">左上角圆形按键</span></div>
       <div class="help-row"><span>跳跃 / 包扎</span><span class="help-key">右侧圆形按键</span></div>
       <div class="help-row"><span>按钮位置与大小</span><span class="help-key">设置里拖拽编辑</span></div>
     </div>
@@ -835,6 +842,8 @@ window.addEventListener('resize', () => {
 // ---------- 主循环 ----------
 const clock = new THREE.Clock();
 let hudTimer = 0;
+let lastStepCycle = 0; // 脚步声：上一个 bob 谷底所在的周期号
+let footstepCount = 0; // 脚步声触发总次数（调试计数，__impasseDebug.footstepCount）
 
 function animate() {
   requestAnimationFrame(animate);
@@ -994,14 +1003,28 @@ function animate() {
       bandageShown = showBandage;
     }
 
-    // 头部摆动：幅度随速度淡入淡出（停下不跳变），strafing 时轻微侧倾；空中不摆动
+    // 头部摆动：幅度随速度淡入淡出（停下不跳变），strafing 时轻微侧倾；空中不摆动。
+    // 垂直摆动一周期一步，横向摆动与滚转半频（一步一晃）；机瞄时因移速变慢
+    // 摆动自然变小，沿用旧行为，不特殊处理。
     const speedNow = Math.hypot(player.vel.x, player.vel.z);
     const speedNorm = Math.min(1, speedNow / 3.4);
-    const bobTarget = player.grounded ? 0.02 * speedNorm : 0;
+    const bobTarget = player.grounded ? BOB_VERT_AMP * speedNorm : 0;
     player.bobAmp += (bobTarget - player.bobAmp) * Math.min(1, 6 * dt);
     if (speedNorm > 0.05) player.bobT += dt * (5 + 5 * speedNorm);
+    const ampFrac = player.bobAmp / BOB_VERT_AMP; // 0..1，淡入系数
     const bobY = Math.sin(player.bobT) * player.bobAmp;
-    const bobX = Math.cos(player.bobT * 0.5) * player.bobAmp * 0.4;
+    const bobX = Math.cos(player.bobT * 0.5) * BOB_LAT_AMP * ampFrac;
+    const bobRoll = Math.cos(player.bobT * 0.5) * BOB_ROLL_AMP * ampFrac;
+    // 脚步声：bob 周期每次过谷底（sin 达 -1）即一步；落地瞬间不重复触发。
+    // 占位合成音，等真实脚步素材落地后替换（见 audio.footstep 的注释）。
+    const stepCycle = Math.floor((player.bobT - Math.PI * 1.5) / (Math.PI * 2));
+    if (stepCycle !== lastStepCycle) {
+      lastStepCycle = stepCycle;
+      if (player.grounded && player.bobAmp > 0.01) {
+        footstepCount++;
+        audio.footstep();
+      }
+    }
     const leanTarget = -mx * 0.012 * speedNorm;
     player.lean += (leanTarget - player.lean) * Math.min(1, 8 * dt);
 
@@ -1050,7 +1073,7 @@ function animate() {
     camera.position.set(player.pos.x + bobX * cos, player.pos.y + bobY - player.landDip, player.pos.z - bobX * sin);
     camera.rotation.y = player.yaw + recoil.yaw + swayYaw;
     camera.rotation.x = player.pitch + recoil.pitch + swayPitch;
-    camera.rotation.z = player.lean;
+    camera.rotation.z = player.lean + bobRoll;
 
     // 机瞄 FOV + 疾跑 FOV 小幅扩张
     const sprinting = controls.state.sprint && my > 0.1 && speedNorm > 0.5;
@@ -1117,6 +1140,12 @@ window.__impasseDebug = {
   get playerY() { return player.pos.y; },
   get feetY() { return player.pos.y - EYE_HEIGHT; },
   get cameraY() { return camera.position.y; },
+  get cameraX() { return camera.position.x; },
+  get cameraZ() { return camera.position.z; },
+  get cameraRoll() { return camera.rotation.z; },
+  get bobAmp() { return player.bobAmp; },
+  get bobT() { return player.bobT; },
+  get footstepCount() { return footstepCount; },
   get grounded() { return player.grounded; },
   get groundHeight() { return player.groundHeight; },
   get playerPos() { return { x: player.pos.x, y: player.pos.y, z: player.pos.z }; },

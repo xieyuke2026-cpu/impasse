@@ -260,9 +260,12 @@ export function createControls({ canvas, elements, settings }) {
     });
   }
 
-  bindHold(elements.btnFire,
-    () => { state.firing = true; },
-    () => { state.firing = false; });
+  // 开火：右下主开火键与左上角备用键共用同一对处理函数（同一状态，不复制逻辑）。
+  // 两键同时按住时，松开任意一个即停火——不会卡住持续开火。
+  const fireDown = () => { state.firing = true; };
+  const fireUp = () => { state.firing = false; };
+  bindHold(elements.btnFire, fireDown, fireUp);
+  bindHold(elements.btnFireAlt, fireDown, fireUp);
 
   // 瞄准键：切换模式（点按切换）或按住模式（按住才机瞄），由设置决定。
   // 触屏走 touchstart/touchend（touchstart 的 preventDefault 会抑制随后的合成 click）；
